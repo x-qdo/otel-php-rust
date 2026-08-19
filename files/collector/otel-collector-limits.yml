@@ -1,0 +1,21 @@
+# Payload-limit conformance collector: 1 MiB request bound on both receivers.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        max_recv_msg_size_mib: 1
+      http:
+        endpoint: 0.0.0.0:4318
+        max_request_body_size: 1048576
+
+exporters:
+  file:
+    path: /var/lib/otel/traces.json
+    flush_interval: 100ms
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [file]

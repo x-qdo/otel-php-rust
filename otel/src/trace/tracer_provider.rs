@@ -6,13 +6,17 @@ use crate::{
             BatchMetrics, BatchMetricsSnapshot, BatchProcessorConfig, BoundedBatchSpanProcessor,
         },
         memory_exporter::MEMORY_EXPORTER,
+        otlp_transport::{self, TransportSettings},
         tracer::TracerClass,
     },
     util,
 };
 use once_cell::sync::Lazy;
 use opentelemetry::{InstrumentationScope, KeyValue, trace::TracerProvider};
-use opentelemetry_otlp::{Protocol, SpanExporter as OtlpSpanExporter, WithExportConfig};
+use opentelemetry_otlp::{
+    Compression, Protocol, SpanExporter as OtlpSpanExporter, WithExportConfig, WithHttpConfig,
+    WithTonicConfig,
+};
 use opentelemetry_sdk::{
     Resource,
     trace::{Sampler::AlwaysOff, SdkTracerProvider, SpanExporter, TracerProviderBuilder},
@@ -34,7 +38,6 @@ use std::{
     process,
     sync::{Arc, Mutex},
 };
-use url::Url;
 
 const TRACER_PROVIDER_CLASS_NAME: &str = r"OpenTelemetry\API\Trace\TracerProvider";
 
@@ -61,7 +64,7 @@ static NOOP_TRACER_PROVIDER: Lazy<Arc<SdkTracerProvider>> = Lazy::new(|| {
 thread_local! {
     // Configuration hash of the current request. The environment only changes
     // between RINIT (dotenv / $_SERVER import) and RSHUTDOWN (restore), so
-    // hashing the twenty variables once per request instead of on every
+    // hashing the configuration variables once per request instead of on every
     // provider lookup keeps getTracer() and RINIT off the env lock.
     static REQUEST_CONFIG_HASH: RefCell<Option<String>> = const { RefCell::new(None) };
 }
@@ -105,12 +108,23 @@ fn compute_config_hash() -> String {
         "OTEL_EXPORTER_OTLP_TRACES_COMPRESSION",
         "OTEL_EXPORTER_OTLP_TIMEOUT",
         "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT",
+        "OTEL_EXPORTER_OTLP_CERTIFICATE",
+        "OTEL_EXPORTER_OTLP_TRACES_CERTIFICATE",
+        "OTEL_EXPORTER_OTLP_CLIENT_KEY",
+        "OTEL_EXPORTER_OTLP_TRACES_CLIENT_KEY",
+        "OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE",
+        "OTEL_EXPORTER_OTLP_TRACES_CLIENT_CERTIFICATE",
+        "OTEL_EXPORTER_OTLP_INSECURE",
+        "OTEL_EXPORTER_OTLP_TRACES_INSECURE",
         "OTEL_SPAN_PROCESSOR",
         "OTEL_BSP_MAX_QUEUE_SIZE",
         "OTEL_BSP_MAX_EXPORT_BATCH_SIZE",
         "OTEL_BSP_SCHEDULE_DELAY",
         "OTEL_BSP_MAX_CONCURRENT_EXPORTS",
         "OTEL_PHP_SHUTDOWN_TIMEOUT",
+        "OTEL_PHP_EXPORT_RETRY_MAX_ATTEMPTS",
+        "OTEL_PHP_EXPORT_RETRY_MAX_ELAPSED",
+        "OTEL_PHP_EXPORT_RETRY_INITIAL_BACKOFF",
     ] {
         name.hash(&mut hasher);
         env::var(name).unwrap_or_default().hash(&mut hasher);
@@ -153,28 +167,43 @@ where
     Ok(builder.with_span_processor(processor))
 }
 
-fn validate_otlp_endpoint() -> bool {
-    let endpoint = env::var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
-        .or_else(|_| env::var("OTEL_EXPORTER_OTLP_ENDPOINT"));
-    let Ok(endpoint) = endpoint else {
-        return true;
-    };
-
-    match Url::parse(&endpoint) {
-        Ok(url)
-            if matches!(url.scheme(), "http" | "https")
-                && url.host_str().is_some()
-                && url.username().is_empty()
-                && url.password().is_none() =>
-        {
-            true
+fn build_otlp_exporter(
+    settings: &TransportSettings,
+    timeout: std::time::Duration,
+) -> Result<OtlpSpanExporter, String> {
+    match settings.protocol {
+        otlp_transport::Protocol::HttpProtobuf => {
+            tracing::debug!("Using http/protobuf trace exporter");
+            let client = otlp_transport::build_http_client(settings, timeout)?;
+            let mut builder = OtlpSpanExporter::builder()
+                .with_http()
+                .with_http_client(client)
+                .with_protocol(Protocol::HttpBinary)
+                .with_timeout(timeout);
+            if settings.compression == otlp_transport::Compression::Gzip {
+                builder = builder.with_compression(Compression::Gzip);
+            }
+            otlp_transport::with_exporter_env_masked(|| builder.build())
+                .map_err(|error| format!("Failed to create OTLP HTTP trace exporter: {error:?}"))
         }
-        _ => {
-            tracing::warn!(
-                "Invalid OTLP endpoint {:?}; using a no-op trace provider",
-                endpoint
-            );
-            false
+        otlp_transport::Protocol::Grpc => {
+            tracing::debug!("Using gRPC trace exporter with tokio runtime");
+            let runtime = init_tokio_runtime().map_err(|error| {
+                format!("Failed to create runtime for OTLP gRPC trace exporter: {error:?}")
+            })?;
+            let mut builder = OtlpSpanExporter::builder()
+                .with_tonic()
+                .with_endpoint(settings.endpoint.as_str())
+                .with_timeout(timeout)
+                .with_metadata(otlp_transport::grpc_metadata(&settings.headers));
+            if let Some(tls) = &settings.tls {
+                builder = builder.with_tls_config(otlp_transport::grpc_tls_config(tls));
+            }
+            if settings.compression == otlp_transport::Compression::Gzip {
+                builder = builder.with_compression(Compression::Gzip);
+            }
+            otlp_transport::with_exporter_env_masked(|| runtime.block_on(async { builder.build() }))
+                .map_err(|error| format!("Failed to create OTLP gRPC trace exporter: {error:?}"))
         }
     }
 }
@@ -310,10 +339,6 @@ pub fn init_once() {
             }
         };
     } else {
-        if !validate_otlp_endpoint() {
-            providers.insert(key, no_op_entry());
-            return;
-        }
         let Some(network_batch_config) = batch_config.as_ref() else {
             tracing::warn!(
                 "Network trace exporter requires bounded batch configuration; using a no-op provider"
@@ -325,38 +350,10 @@ pub fn init_once() {
             .or_else(|_| env::var("OTEL_EXPORTER_OTLP_PROTOCOL"))
             .unwrap_or_else(|_| "grpc".to_string())
             .to_ascii_lowercase();
-        if protocol == "http/protobuf" {
-            tracing::debug!("Using http/protobuf trace exporter");
-            let exporter = OtlpSpanExporter::builder()
-                .with_http()
-                .with_protocol(Protocol::HttpBinary)
-                .with_timeout(network_batch_config.export_timeout)
-                .build();
-            let exporter = match exporter {
-                Ok(exporter) => exporter,
-                Err(error) => {
-                    tracing::warn!(
-                        "Failed to create OTLP HTTP trace exporter: {:?}; using a no-op provider",
-                        error
-                    );
-                    providers.insert(key, no_op_entry());
-                    return;
-                }
-            };
-            builder = match add_exporter(builder, exporter, false, batch_config.as_ref(), &metrics)
-            {
-                Ok(builder) => builder,
-                Err(error) => {
-                    tracing::warn!(
-                        "Failed to create trace processor: {}; using a no-op provider",
-                        error
-                    );
-                    providers.insert(key, no_op_entry());
-                    return;
-                }
-            };
-        } else {
-            if protocol != "grpc" {
+        let protocol = match protocol.as_str() {
+            "grpc" => otlp_transport::Protocol::Grpc,
+            "http/protobuf" => otlp_transport::Protocol::HttpProtobuf,
+            _ => {
                 tracing::warn!(
                     "Unsupported OTLP trace protocol {:?}; using a no-op trace provider",
                     protocol
@@ -364,48 +361,34 @@ pub fn init_once() {
                 providers.insert(key, no_op_entry());
                 return;
             }
-            tracing::debug!("Using gRPC trace exporter with tokio runtime");
-            let runtime = match init_tokio_runtime() {
-                Ok(runtime) => runtime,
-                Err(error) => {
-                    tracing::warn!(
-                        "Failed to create runtime for OTLP gRPC trace exporter: {:?}; using a no-op provider",
-                        error
-                    );
-                    providers.insert(key, no_op_entry());
-                    return;
-                }
-            };
-            let exporter = runtime.block_on(async {
-                OtlpSpanExporter::builder()
-                    .with_tonic()
-                    .with_timeout(network_batch_config.export_timeout)
-                    .build()
-            });
-            let exporter = match exporter {
-                Ok(exporter) => exporter,
-                Err(error) => {
-                    tracing::warn!(
-                        "Failed to create OTLP gRPC trace exporter: {:?}; using a no-op provider",
-                        error
-                    );
-                    providers.insert(key, no_op_entry());
-                    return;
-                }
-            };
-            builder = match add_exporter(builder, exporter, false, batch_config.as_ref(), &metrics)
-            {
-                Ok(builder) => builder,
-                Err(error) => {
-                    tracing::warn!(
-                        "Failed to create trace processor: {}; using a no-op provider",
-                        error
-                    );
-                    providers.insert(key, no_op_entry());
-                    return;
-                }
-            };
-        }
+        };
+        let settings = match TransportSettings::from_env(protocol) {
+            Ok(settings) => settings,
+            Err(error) => {
+                tracing::warn!("{}; using a no-op trace provider", error);
+                providers.insert(key, no_op_entry());
+                return;
+            }
+        };
+        let exporter = match build_otlp_exporter(&settings, network_batch_config.export_timeout) {
+            Ok(exporter) => exporter,
+            Err(error) => {
+                tracing::warn!("{}; using a no-op trace provider", error);
+                providers.insert(key, no_op_entry());
+                return;
+            }
+        };
+        builder = match add_exporter(builder, exporter, false, batch_config.as_ref(), &metrics) {
+            Ok(builder) => builder,
+            Err(error) => {
+                tracing::warn!(
+                    "Failed to create trace processor: {}; using a no-op provider",
+                    error
+                );
+                providers.insert(key, no_op_entry());
+                return;
+            }
+        };
     }
     let provider = Arc::new(builder.with_resource(resource).build());
     providers.insert(
@@ -504,7 +487,7 @@ pub fn shutdown() {
             let result = entry.provider.shutdown_with_timeout(entry.shutdown_timeout);
             let metrics_after = entry.metrics.snapshot();
             tracing::info!(
-                "TraceProviderShutdown pid={} result={:?} sampled_ended={} queued={} exported={} dropped_queue_full={} dropped_export_failure={} dropped_shutdown={} export_failures={} queue_depth={} queue_high_watermark={}",
+                "TraceProviderShutdown pid={} result={:?} sampled_ended={} queued={} exported={} dropped_queue_full={} dropped_export_failure={} dropped_shutdown={} export_failures={} export_retries={} export_retry_recovered={} queue_depth={} queue_high_watermark={}",
                 pid,
                 result,
                 metrics_after.sampled_ended,
@@ -514,6 +497,8 @@ pub fn shutdown() {
                 metrics_after.dropped_export_failure,
                 metrics_after.dropped_shutdown,
                 metrics_after.export_failures,
+                metrics_after.export_retries,
+                metrics_after.export_retry_recovered,
                 metrics_after.queue_depth,
                 metrics_after.queue_high_watermark,
             );
@@ -618,6 +603,11 @@ pub fn make_tracer_provider_class(
             );
             result.insert("dropped_shutdown", metrics.dropped_shutdown as i64);
             result.insert("export_failures", metrics.export_failures as i64);
+            result.insert("export_retries", metrics.export_retries as i64);
+            result.insert(
+                "export_retry_recovered",
+                metrics.export_retry_recovered as i64,
+            );
             result.insert("queue_depth", metrics.queue_depth as i64);
             result.insert("queue_high_watermark", metrics.queue_high_watermark as i64);
             result.insert("in_flight", metrics.in_flight as i64);

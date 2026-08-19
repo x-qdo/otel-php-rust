@@ -2,6 +2,7 @@ pub mod batch_processor;
 pub mod local_root_span;
 pub mod memory_exporter;
 pub mod non_recording_span;
+pub mod otlp_transport;
 pub mod propagation;
 pub mod span;
 pub mod span_builder;

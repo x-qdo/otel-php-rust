@@ -1,0 +1,46 @@
+# TLS conformance collector: server-only TLS on 4317/4318, mutual TLS on 4319/4320 and a
+# plaintext pair on 4327/4328. Certificates are generated per test run into /var/lib/otel.
+receivers:
+  otlp/tls:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        tls:
+          cert_file: /var/lib/otel/server.crt
+          key_file: /var/lib/otel/server.key
+      http:
+        endpoint: 0.0.0.0:4318
+        tls:
+          cert_file: /var/lib/otel/server.crt
+          key_file: /var/lib/otel/server.key
+  otlp/mtls:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4319
+        tls:
+          cert_file: /var/lib/otel/server.crt
+          key_file: /var/lib/otel/server.key
+          client_ca_file: /var/lib/otel/ca.crt
+      http:
+        endpoint: 0.0.0.0:4320
+        tls:
+          cert_file: /var/lib/otel/server.crt
+          key_file: /var/lib/otel/server.key
+          client_ca_file: /var/lib/otel/ca.crt
+  otlp/plain:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4327
+      http:
+        endpoint: 0.0.0.0:4328
+
+exporters:
+  file:
+    path: /var/lib/otel/traces.json
+    flush_interval: 100ms
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp/tls, otlp/mtls, otlp/plain]
+      exporters: [file]

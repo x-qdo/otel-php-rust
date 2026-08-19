@@ -44,3 +44,25 @@ services:
     volumes:
       - ./files/collector/otel-collector-auth.yml:/etc/otel-collector-config.yml:ro
       - ${OTEL_AUTH_CAPTURE_DIR:-/tmp/otel-php-rust-auth-capture}:/var/lib/otel
+  collector-tls:
+    image: otel/opentelemetry-collector-contrib
+    command: [ "--config=/etc/otel-collector-config.yml" ]
+    volumes:
+      - ./files/collector/otel-collector-tls.yml:/etc/otel-collector-config.yml:ro
+      - ${OTEL_TLS_CAPTURE_DIR:-/tmp/otel-php-rust-tls-capture}:/var/lib/otel
+  collector-limits:
+    image: otel/opentelemetry-collector-contrib
+    command: [ "--config=/etc/otel-collector-config.yml" ]
+    volumes:
+      - ./files/collector/otel-collector-limits.yml:/etc/otel-collector-config.yml:ro
+      - ${OTEL_LIMITS_CAPTURE_DIR:-/tmp/otel-php-rust-limits-capture}:/var/lib/otel
+  otlp-fixture:
+    image: python:3.13-alpine
+    command: [ "python", "/opt/otlp_transport_fixture.py" ]
+    environment:
+      FIXTURE_LOG: /var/lib/otel/fixture.jsonl
+      RELAY_UPSTREAM: collector:4317
+    volumes:
+      - ./otel/tests/integration/otlp_transport_fixture.py:/opt/otlp_transport_fixture.py:ro
+      - ${OTEL_FIXTURE_CAPTURE_DIR:-/tmp/otel-php-rust-fixture-capture}:/var/lib/otel
+    read_only: true
