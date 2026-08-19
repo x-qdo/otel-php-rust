@@ -5,7 +5,9 @@ transport_test_init() {
     repo_root="$(cd "$(dirname "${BASH_SOURCE[1]}")/../../.." && pwd)"
     php_version="${PHP_VERSION:-8.2}"
     capture_dir="$(mktemp -d "/tmp/otel-php-rust-$1.XXXXXX")"
-    chmod 755 "${capture_dir}"
+    # The collector and PHP test images use different non-root UIDs. This
+    # randomized, short-lived directory is their shared output volume.
+    chmod 0777 "${capture_dir}"
     started_services=()
     trap transport_test_cleanup EXIT
 }

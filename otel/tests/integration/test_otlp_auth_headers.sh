@@ -4,6 +4,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 capture_dir="$(mktemp -d /tmp/otel-php-rust-auth-capture.XXXXXX)"
+chmod 0777 "${capture_dir}"
 php_version="${PHP_VERSION:-8.2}"
 
 cleanup() {
