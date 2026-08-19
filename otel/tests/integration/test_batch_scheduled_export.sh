@@ -14,6 +14,16 @@ trap cleanup EXIT
 PHP_VERSION="${php_version}" docker compose --project-directory "${repo_root}" \
     up -d --force-recreate collector-benchmark
 
+PHP_VERSION="${php_version}" docker compose --project-directory "${repo_root}" run --rm -T \
+    php sh -ec '
+        attempt=0
+        until nc -z collector-benchmark 4317 && nc -z collector-benchmark 4318; do
+            attempt=$((attempt + 1))
+            [ "$attempt" -lt 100 ] || exit 1
+            sleep 0.1
+        done
+    '
+
 run_transport() {
     local protocol="$1"
     local port="$2"

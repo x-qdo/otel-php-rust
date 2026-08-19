@@ -14,6 +14,16 @@ trap cleanup EXIT
 PHP_VERSION="${php_version}" docker compose --project-directory "${repo_root}" \
     up -d --force-recreate collector-benchmark
 
+PHP_VERSION="${php_version}" docker compose --project-directory "${repo_root}" run --rm -T \
+    php sh -ec '
+        attempt=0
+        until nc -z collector-benchmark 4317; do
+            attempt=$((attempt + 1))
+            [ "$attempt" -lt 100 ] || exit 1
+            sleep 0.1
+        done
+    '
+
 PHP_VERSION="${php_version}" docker compose --project-directory "${repo_root}" run --rm \
     -e OTEL_LOGS_EXPORTER=none \
     -e OTEL_EXPORTER_OTLP_ENDPOINT=http://collector-benchmark:4317 \
