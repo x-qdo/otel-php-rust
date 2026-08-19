@@ -29,5 +29,5 @@ foreach (array_merge(get_declared_classes(), get_declared_interfaces()) as $name
 var_dump($checked > 0);
 ?>
 --EXPECT--
-string(0) ""
+NULL
 bool(true)

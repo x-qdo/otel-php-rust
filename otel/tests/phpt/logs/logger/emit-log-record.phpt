@@ -83,13 +83,13 @@ array(12) {
     ["a_string"]=>
     string(20) "String(Owned("foo"))"
     ["string_array"]=>
-    string(82) "String(Owned("Array(String([Owned(\"one\"), Owned(\"two\"), Owned(\"three\")]))"))"
+    string(77) "ListAny([String(Owned("one")), String(Owned("two")), String(Owned("three"))])"
     ["int_array"]=>
-    string(38) "String(Owned("Array(I64([1, 2, 3]))"))"
+    string(33) "ListAny([Int(1), Int(2), Int(3)])"
     ["float_array"]=>
-    string(44) "String(Owned("Array(F64([1.1, 2.2, 3.3]))"))"
+    string(48) "ListAny([Double(1.1), Double(2.2), Double(3.3)])"
     ["bool_array"]=>
-    string(49) "String(Owned("Array(Bool([true, false, true]))"))"
+    string(55) "ListAny([Boolean(true), Boolean(false), Boolean(true)])"
     ["another_string"]=>
     string(20) "String(Owned("bar"))"
   }

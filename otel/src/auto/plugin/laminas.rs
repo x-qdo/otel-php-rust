@@ -178,10 +178,10 @@ impl LaminasCompleteRequestHandler {
                         .and_then(|mut zv| zv.as_mut_z_obj().map(|obj| obj.to_ref_owned()));
                 if let Some(mut exception) = exception {
                     tracing::debug!("Auto::Laminas::pre (MvcEvent::completeRequest) - exception found");
-                    let attributes = crate::error::php_exception_to_attributes(&mut exception);
+                    let attributes = crate::error::php_exception_to_auto_attributes(&mut exception);
                     span_ref.add_event("exception", attributes);
                     span_ref.set_status(Status::error(""));
-                } else {
+                } else if crate::config::sensitive_data::capture() {
                     let error_str = mvc_event_obj
                         .call("getError", [])
                         .ok()
@@ -191,6 +191,8 @@ impl LaminasCompleteRequestHandler {
                     let error = StringError(error_str.to_string());
                     span_ref.record_error(&error);
                     span_ref.set_status(Status::error(error_str));
+                } else {
+                    span_ref.set_status(Status::error(""));
                 }
 
             }
@@ -417,10 +419,15 @@ impl LaminasStatementPrepareHandler {
             });
 
             let mut attributes = vec![];
-            tracing::debug!("Auto::Laminas::post (Statement::prepare) - sql: {:?}", sql);
+            tracing::debug!(
+                "Auto::Laminas::post (Statement::prepare) - sql present={}",
+                sql.is_some()
+            );
             if let Some(sql_str) = sql {
-                attributes.push(KeyValue::new(SemConv::trace::DB_QUERY_TEXT, sql_str.clone()));
-                prepare_attributes.push(KeyValue::new(SemConv::trace::DB_QUERY_TEXT, sql_str.clone()));
+                if crate::config::sensitive_data::capture() {
+                    attributes.push(KeyValue::new(SemConv::trace::DB_QUERY_TEXT, sql_str.clone()));
+                    prepare_attributes.push(KeyValue::new(SemConv::trace::DB_QUERY_TEXT, sql_str.clone()));
+                }
                 let sql_name = utils::extract_span_name_from_sql(&sql_str)
                     .unwrap_or_else(|| "OTHER".to_string());
                 execute_span_name = sql_name.clone();
@@ -553,7 +560,9 @@ impl LaminasConnectionExecuteHandler {
         let sql_zval: &mut ZVal = exec_data_ref.get_mut_parameter(0);
         let sql_str = sql_zval.as_z_str().and_then(|s| s.to_str().ok()).unwrap_or_default();
 
-        attributes.push(KeyValue::new(SemConv::trace::DB_QUERY_TEXT, sql_str));
+        if crate::config::sensitive_data::capture() {
+            attributes.push(KeyValue::new(SemConv::trace::DB_QUERY_TEXT, sql_str));
+        }
         let span_name = utils::extract_span_name_from_sql(sql_str)
             .unwrap_or_else(|| "execute".to_string());
 

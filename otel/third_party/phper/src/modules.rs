@@ -73,7 +73,9 @@ type RequestHook = dyn Fn();
 // job of the panic hook installed by the extension.
 
 unsafe extern "C" fn module_startup(_type: c_int, module_number: c_int) -> c_int {
-    match catch_unwind(AssertUnwindSafe(|| unsafe { module_startup_inner(module_number) })) {
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        module_startup_inner(module_number)
+    })) {
         Ok(()) => ZEND_RESULT_CODE_SUCCESS,
         Err(_) => ZEND_RESULT_CODE_FAILURE,
     }
@@ -107,6 +109,15 @@ unsafe fn module_startup_inner(module_number: c_int) {
                 .map(|f| (f.name.as_c_str(), f.handler.clone())),
         );
 
+        // Enums may appear in class/interface method signatures. Register
+        // them before classes so Zend can resolve those named types while it
+        // checks implementation compatibility.
+        #[cfg(all(phper_major_version = "8", not(phper_minor_version = "0")))]
+        for enum_entity in &module.enum_entities {
+            enum_entity.init();
+            module.handler_map.extend(enum_entity.handler_map());
+        }
+
         for class_entity in &module.class_entities {
             let ce = class_entity.init();
             class_entity.declare_properties(ce);
@@ -115,12 +126,6 @@ unsafe fn module_startup_inner(module_number: c_int) {
                 &mut (*ce).function_table,
                 class_entity.method_handlers(),
             );
-        }
-
-        #[cfg(all(phper_major_version = "8", not(phper_minor_version = "0")))]
-        for enum_entity in &module.enum_entities {
-            enum_entity.init();
-            module.handler_map.extend(enum_entity.handler_map());
         }
 
         if let Some(f) = take(&mut module.module_init) {
@@ -209,7 +214,9 @@ pub struct Module {
 impl Module {
     /// Construct the `Module` with base metadata.
     pub fn new(
-        name: impl Into<String>, version: impl Into<String>, author: impl Into<String>,
+        name: impl Into<String>,
+        version: impl Into<String>,
+        author: impl Into<String>,
     ) -> Self {
         Self {
             name: ensure_end_with_zero(name),
@@ -273,7 +280,9 @@ impl Module {
 
     /// Register function to module.
     pub fn add_function<F, Z, E>(
-        &mut self, name: impl Into<String>, handler: F,
+        &mut self,
+        name: impl Into<String>,
+        handler: F,
     ) -> &mut FunctionEntity
     where
         F: Fn(&mut [ZVal]) -> Result<Z, E> + 'static,
@@ -292,7 +301,9 @@ impl Module {
     /// alongside `&mut [ZVal]`, enabling methods like
     /// [`materialize_missing`](crate::values::ExecuteData::materialize_missing).
     pub fn add_function_with_execute_data<F, Z, E>(
-        &mut self, name: impl Into<String>, handler: F,
+        &mut self,
+        name: impl Into<String>,
+        handler: F,
     ) -> &mut FunctionEntity
     where
         F: Fn(&mut crate::values::ExecuteData, &mut [ZVal]) -> Result<Z, E> + 'static,
@@ -327,7 +338,8 @@ impl Module {
     /// Register enum to module.
     #[cfg(all(phper_major_version = "8", not(phper_minor_version = "0")))]
     pub fn add_enum<B: crate::enums::EnumBackingType>(
-        &mut self, enum_entity: crate::enums::EnumEntity<B>,
+        &mut self,
+        enum_entity: crate::enums::EnumEntity<B>,
     ) -> crate::enums::Enum {
         let bound_enum = enum_entity.bound_enum();
         // SAFETY: The type parameter `B` is erased to `()` for storage in the
@@ -346,7 +358,9 @@ impl Module {
 
     /// Register ini configuration to module.
     pub fn add_ini(
-        &mut self, name: impl Into<String>, default_value: impl ini::IntoIniValue,
+        &mut self,
+        name: impl Into<String>,
+        default_value: impl ini::IntoIniValue,
         policy: ini::Policy,
     ) {
         self.ini_entities

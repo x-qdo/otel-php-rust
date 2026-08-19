@@ -1,12 +1,12 @@
 use crate::{
     auto, config,
-    context::storage,
-    error::php_error_to_attributes,
+    context::{native_context::NativeContext, storage},
     logging,
     logs::logger_provider,
+    metrics::{meter_provider, observable},
     module,
     trace::{local_root_span, tracer_provider},
-    util::get_sapi_module_name,
+    util::{self, get_sapi_module_name},
 };
 use anyhow::Context as _;
 use once_cell::sync::Lazy;
@@ -28,7 +28,7 @@ use std::{
     collections::HashMap,
     env, fs,
     path::{Path, PathBuf},
-    sync::Arc,
+    rc::Rc,
     sync::Mutex,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -54,7 +54,11 @@ pub fn on_request_init() {
     logging::init_once();
     tracing::debug!("OpenTelemetry::RINIT");
     init_environment();
+    config::sensitive_data::begin_request();
+    util::begin_request_attribute_limits();
     tracer_provider::begin_request();
+    logger_provider::begin_request();
+    meter_provider::begin_request();
 
     if is_disabled() {
         tracing::debug!("OpenTelemetry::RINIT: SDK disabled, skipping initialization");
@@ -63,6 +67,7 @@ pub fn on_request_init() {
 
     tracer_provider::init_once();
     logger_provider::init_once();
+    meter_provider::init_once();
     if !PROPAGATOR_INSTALLED.swap(true, Ordering::AcqRel) {
         global::set_text_map_propagator(TraceContextPropagator::new());
     }
@@ -73,13 +78,27 @@ pub fn on_request_init() {
 /// RSHUTDOWN handler. Invoke request shutdown logic, call shutdown() on plugin manager.
 pub fn on_request_shutdown() {
     if module::is_disabled() {
+        // The public API remains usable when automatic SDK instrumentation is
+        // disabled (for example, the CLI default). Request-owned Context
+        // values and custom storage can still contain PHP zvals and must be
+        // released before Zend tears the request down.
+        storage::clear_context_storage();
+        local_root_span::clear_request_state();
+        config::sensitive_data::end_request();
+        util::end_request_attribute_limits();
         return;
     }
     #[cfg(feature = "test")]
     crate::panic::probes::panic_at("rshutdown");
     tracing::debug!("OpenTelemetry::RSHUTDOWN");
+    observable::flush_and_clear_request_callbacks();
     shutdown();
+    local_root_span::clear_request_state();
     tracer_provider::end_request();
+    logger_provider::end_request();
+    meter_provider::end_request();
+    config::sensitive_data::end_request();
+    util::end_request_attribute_limits();
     if let Some(plugin_manager) = auto::plugin_manager::get_global() {
         let pm = plugin_manager
             .read()
@@ -317,7 +336,8 @@ fn is_excluded_url(uri: &str) -> bool {
                                     break;
                                 }
                             } else {
-                                if let Some(idx) = uri.get(pos..).and_then(|rest| rest.find(*part)) {
+                                if let Some(idx) = uri.get(pos..).and_then(|rest| rest.find(*part))
+                                {
                                     pos += idx + part.len();
                                 } else {
                                     matched = false;
@@ -375,12 +395,15 @@ fn init() {
     let mut attributes = span_builder.attributes.clone().unwrap_or_default();
     attributes.push(KeyValue::new(
         SemConv::trace::URL_FULL,
-        request_details.uri.unwrap_or_default(),
+        config::sensitive_data::sanitize_url(
+            &request_details.uri.unwrap_or_default(),
+        ),
     ));
     attributes.push(KeyValue::new(
         SemConv::trace::HTTP_REQUEST_METHOD,
         request_details.method.unwrap_or_default(),
     ));
+    let attributes = util::limit_key_values(attributes, util::AttributeDestination::Span);
     //attributes.push(KeyValue::new(SemConv::trace::HTTP_REQUEST_BODY_SIZE, request_details.body_length.unwrap_or_default())); //experimental
     // TODO other HTTP attributes are experimental
 
@@ -390,7 +413,7 @@ fn init() {
     let is_local_root = !Context::current().span().span_context().is_valid();
     let span = tracer.build_with_context(span_builder, &parent_context);
     let ctx = Context::current_with_span(span);
-    let context_id = storage::store_context_instance(Arc::new(ctx.clone()));
+    let context_id = storage::store_context_instance(Rc::new(NativeContext::new(ctx.clone())));
     OTEL_CONTEXT_ID.with(|cell| {
         *cell.borrow_mut() = context_id;
     });
@@ -432,8 +455,11 @@ fn shutdown() {
                     let error = ZVal::call(&mut func, &mut args).ok();
                     if let Some(error) = error {
                         if error.get_type_info().is_array() {
-                            tracing::debug!("RSHUTDOWN::HTTP error detected: {:?}", error);
-                            let attributes = php_error_to_attributes(&error);
+                            tracing::debug!("RSHUTDOWN::HTTP error detected");
+                            let attributes = util::limit_key_values(
+                                crate::error::php_error_to_auto_attributes(&error),
+                                util::AttributeDestination::Event,
+                            );
                             span.add_event("exception", attributes);
                         }
                     }

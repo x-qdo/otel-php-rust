@@ -8,6 +8,8 @@ if (PHP_VERSION_ID < 70100 || PHP_VERSION_ID >= 80300) {
     die('skip requires PHP 7.1 -> 8.2');
 }
 ?>
+--ENV--
+OTEL_PHP_CAPTURE_SENSITIVE_DATA=true
 --FILE--
 <?php
 include dirname(__DIR__, 2) . '/run-server.php';

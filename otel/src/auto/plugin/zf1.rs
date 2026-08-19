@@ -227,17 +227,22 @@ impl Zf1SendResponseHandler {
                     .and_then(|zv| zv.as_z_arr().map(|arr| arr.iter().map(|(_, v)| v.clone()).collect::<Vec<_>>()))
                     .unwrap_or_default();
 
-                let mut status_description = "exception".to_string();
+                let mut status_description = String::new();
 
                 if let Some(exception) = exceptions.first_mut() {
                     if let Some(exception_obj) = exception.as_mut_z_obj() {
-                        if let Ok(throwable) = phper::errors::ThrowObject::new(exception_obj.to_ref_owned()) {
-                            ctx.span().record_error(&throwable);
+                        if crate::config::sensitive_data::capture() {
+                            if let Ok(throwable) = phper::errors::ThrowObject::new(exception_obj.to_ref_owned()) {
+                                ctx.span().record_error(&throwable);
+                            }
+                            status_description = exception_obj.call("getMessage", [])
+                                .ok()
+                                .and_then(|zv| zv.as_z_str().and_then(|s| s.to_str().ok().map(|s| s.to_owned())))
+                                .unwrap_or(status_description);
+                        } else {
+                            let attributes = crate::error::php_exception_to_auto_attributes(exception_obj);
+                            ctx.span().add_event("exception", attributes);
                         }
-                        status_description = exception_obj.call("getMessage", [])
-                            .ok()
-                            .and_then(|zv| zv.as_z_str().and_then(|s| s.to_str().ok().map(|s| s.to_owned())))
-                            .unwrap_or(status_description);
                     }
                 }
                 if http_response_code >= 500 {
@@ -366,7 +371,9 @@ impl Zf1AdapterPrepareHandler {
         if let Some(sql_str) = sql_zval.as_z_str() {
             if let Ok(sql) = sql_str.to_str() {
                 // Add SQL query as an attribute
-                attributes.push(KeyValue::new(SemConv::trace::DB_QUERY_TEXT, sql.to_string()));
+                if crate::config::sensitive_data::capture() {
+                    attributes.push(KeyValue::new(SemConv::trace::DB_QUERY_TEXT, sql.to_string()));
+                }
                 let sql_name = utils::extract_span_name_from_sql(&sql)
                     .unwrap_or_else(|| "OTHER".to_string());
                 span_name = format!("prepare {}", sql_name);
@@ -414,7 +421,9 @@ impl Zf1AdapterPrepareHandler {
                     let ctx = opentelemetry::Context::current();
                     let span = ctx.span();
                     span.update_name(prepare_span_name);
-                    execute_attributes.push(KeyValue::new(SemConv::trace::DB_QUERY_TEXT, sql.to_string()));
+                    if crate::config::sensitive_data::capture() {
+                        execute_attributes.push(KeyValue::new(SemConv::trace::DB_QUERY_TEXT, sql.to_string()));
+                    }
                     span.set_attributes(execute_attributes.clone());
                     let id = get_object_id(statement_obj);
                     // Add SQL query as an attribute

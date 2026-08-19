@@ -2,6 +2,8 @@
 Test zf1 500
 --EXTENSIONS--
 otel
+--ENV--
+OTEL_PHP_CAPTURE_SENSITIVE_DATA=true
 --FILE--
 <?php
 include dirname(__DIR__, 2) . '/run-server.php';

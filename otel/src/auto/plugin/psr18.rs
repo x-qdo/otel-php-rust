@@ -87,7 +87,10 @@ impl Psr18SendRequestHandler {
                 if let Some(uri_obj) = uri_zval.as_mut_z_obj() {
                     if let Ok(uri_str_zval) = uri_obj.call("__toString", []) {
                         if let Some(uri_str) = uri_str_zval.as_z_str().and_then(|s| s.to_str().ok()) {
-                            attributes.push(KeyValue::new(SemConv::trace::URL_FULL, uri_str.to_owned()));
+                            attributes.push(KeyValue::new(
+                                SemConv::trace::URL_FULL,
+                                crate::config::sensitive_data::sanitize_url(uri_str),
+                            ));
                         }
                     }
                     uri_obj.call("getScheme", [])

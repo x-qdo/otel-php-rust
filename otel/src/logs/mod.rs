@@ -1,7 +1,9 @@
-pub mod logger_interface;
-pub mod logger;
+pub mod event_logger;
 pub mod log_record;
+pub mod log_record_builder;
+pub mod logger;
+pub mod logger_interface;
 pub mod logger_provider;
 pub mod logger_provider_interface;
 pub mod memory_exporter;
-
+pub mod severity;

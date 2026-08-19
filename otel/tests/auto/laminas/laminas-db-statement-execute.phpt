@@ -11,6 +11,7 @@ if (PHP_VERSION_ID < 70100 || PHP_VERSION_ID >= 80300) {
 --ENV--
 OTEL_TRACES_EXPORTER=memory
 OTEL_SPAN_PROCESSOR=simple
+OTEL_PHP_CAPTURE_SENSITIVE_DATA=true
 --INI--
 otel.log.level="warn"
 otel.log.file="/dev/stdout"

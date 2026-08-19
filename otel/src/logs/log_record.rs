@@ -1,260 +1,399 @@
-use phper::classes::ClassEntity;
+use crate::{
+    context::context::{ContextClass, native_context_from_object},
+    logs::severity::{otel_severity, severity_number},
+    util::{self, AttributeDestination, AttributeLimits},
+};
 use opentelemetry::{
-    KeyValue,
-    logs::{Severity, AnyValue},
-    trace::{TraceId, SpanId, TraceFlags},
-    Context,
-    trace::TraceContextExt,
+    Array, Context, Value,
+    logs::{AnyValue, Severity},
+    trace::{SpanId, TraceContextExt, TraceFlags, TraceId},
 };
 use phper::{
     alloc::ToRefOwned,
-    classes::{StateClass, Visibility},
-    functions::Argument,
-    types::ArgumentTypeHint,
+    arrays::IterKey,
+    classes::{ClassEntity, StateClass, Visibility},
+    functions::{Argument, ReturnType},
+    types::{ArgumentTypeHint, ReturnTypeHint},
+    values::{ZVal, ZValRef},
 };
-use std::time::SystemTime;
+use std::{collections::HashMap, time::SystemTime};
 
 pub const LOG_RECORD_CLASS_NAME: &str = r"OpenTelemetry\API\Logs\LogRecord";
+const CONTEXT_INTERFACE: &str = r"OpenTelemetry\Context\ContextInterface";
+const SEVERITY_ENUM: &str = r"OpenTelemetry\API\Logs\Severity";
 
-// State holds the values to be set on the builder later
-#[derive(Default)]
+#[derive(Clone, Copy, Debug)]
+pub struct TraceContextData {
+    pub trace_id: TraceId,
+    pub span_id: SpanId,
+    pub trace_flags: TraceFlags,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub enum LogContext {
+    #[default]
+    Current,
+    None,
+    Explicit(Option<TraceContextData>),
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct LogRecordState {
     pub body: Option<AnyValue>,
     pub severity: Option<Severity>,
     pub severity_text: Option<String>,
-    pub attributes: Vec<KeyValue>,
+    pub attributes: Vec<(String, AnyValue)>,
     pub event_name: Option<String>,
     pub timestamp: Option<SystemTime>,
-    pub trace_id: Option<TraceId>,
-    pub span_id: Option<SpanId>,
-    pub trace_flags: Option<TraceFlags>,
+    pub observed_timestamp: Option<SystemTime>,
+    pub context: LogContext,
 }
 
 pub type LogRecordClass = StateClass<LogRecordState>;
 
-fn zval_to_value(zval: &phper::values::ZVal) -> Option<opentelemetry::Value> {
-    use opentelemetry::{Array, Value};
-    if let Ok(s) = zval.expect_z_str() {
-        Some(Value::String(s.to_str().ok()?.to_owned().into()))
-    } else if let Ok(i) = zval.expect_long() {
-        Some(Value::I64(i))
-    } else if let Ok(f) = zval.expect_double() {
-        Some(Value::F64(f))
-    } else if let Ok(b) = zval.expect_bool() {
-        Some(Value::Bool(b))
-    } else if let Ok(arr) = zval.expect_z_arr() {
-        // Try to collect as homogeneous array
-        let mut bools = Vec::new();
-        let mut i64s = Vec::new();
-        let mut f64s = Vec::new();
-        let mut strings = Vec::new();
-        let mut value_type = None;
+pub fn any_value(value: &ZVal) -> Option<AnyValue> {
+    any_value_with_limits(value, unlimited_any_value_limits(), 0)
+}
 
-        for (_, v) in arr.iter() {
-            if let Ok(b) = v.expect_bool() {
-                if value_type.is_none() || value_type == Some("bool") {
-                    bools.push(b);
-                    value_type = Some("bool");
-                    continue;
-                }
-            }
-            if let Ok(i) = v.expect_long() {
-                if value_type.is_none() || value_type == Some("i64") {
-                    i64s.push(i);
-                    value_type = Some("i64");
-                    continue;
-                }
-            }
-            if let Ok(f) = v.expect_double() {
-                if value_type.is_none() || value_type == Some("f64") {
-                    f64s.push(f);
-                    value_type = Some("f64");
-                    continue;
-                }
-            }
-            if let Ok(s) = v.expect_z_str() {
-                if value_type.is_none() || value_type == Some("string") {
-                    strings.push(s.to_str().unwrap_or("").to_owned().into());
-                    value_type = Some("string");
-                    continue;
-                }
-            }
-            // If we get here, it's a mixed or unsupported type
-            tracing::warn!("Unsupported or mixed array element type in attribute array, skipping attribute: {:?}", v);
-            return None;
-        }
+fn attribute_any_value(value: &ZVal) -> Option<AnyValue> {
+    any_value_with_limits(value, util::attribute_limits(AttributeDestination::Log), 0)
+}
 
-        let array_value = match value_type {
-            Some("bool") => Value::Array(Array::Bool(bools)),
-            Some("i64") => Value::Array(Array::I64(i64s)),
-            Some("f64") => Value::Array(Array::F64(f64s)),
-            Some("string") => Value::Array(Array::String(strings)),
-            _ => {
-                tracing::warn!("Empty or unsupported array for attribute, skipping.");
-                return None;
-            }
-        };
-        Some(array_value)
-    } else {
-        None
+fn unlimited_any_value_limits() -> AttributeLimits {
+    AttributeLimits {
+        count: usize::MAX,
+        key_length: usize::MAX,
+        value_length: usize::MAX,
+        array_length: usize::MAX,
     }
 }
 
-fn insert_attribute(state: &mut LogRecordState, key: String, value_zval: &phper::values::ZVal) -> Result<(), phper::Error> {
-    let value = match zval_to_value(value_zval) {
-        Some(val) => val,
-        None => {
-            tracing::warn!("Unsupported attribute value type for key '{}', skipping: {:?}", key, value_zval);
-            return Ok(());
+fn any_value_with_limits(value: &ZVal, limits: AttributeLimits, depth: usize) -> Option<AnyValue> {
+    if depth >= 64 {
+        return None;
+    }
+    match value.to_value().ok()? {
+        ZValRef::Null => None,
+        ZValRef::Bool(value) => Some(AnyValue::Boolean(value)),
+        ZValRef::Long(value) => Some(AnyValue::Int(value)),
+        ZValRef::Double(value) => Some(AnyValue::Double(value)),
+        ZValRef::Str(value) => value.to_str().ok().map(|value| {
+            AnyValue::String(util::truncate_string(value, limits.value_length).into())
+        }),
+        ZValRef::Arr(array) => {
+            let has_string_key = array.iter().any(|(key, _)| matches!(key, IterKey::ZStr(_)));
+            if has_string_key {
+                let mut values = HashMap::new();
+                for (key, value) in array.iter().take(limits.array_length) {
+                    let key = match key {
+                        IterKey::Index(index) => index.to_string(),
+                        IterKey::ZStr(key) => key.to_str().ok()?.to_string(),
+                    };
+                    if let Some(value) = any_value_with_limits(value, limits, depth + 1) {
+                        values.insert(key.into(), value);
+                    }
+                }
+                Some(AnyValue::Map(Box::new(values)))
+            } else {
+                Some(AnyValue::ListAny(Box::new(
+                    array
+                        .iter()
+                        .take(limits.array_length)
+                        .filter_map(|(_, value)| any_value_with_limits(value, limits, depth + 1))
+                        .collect(),
+                )))
+            }
         }
+        ZValRef::Obj(object) => Some(AnyValue::String(
+            util::truncate_string(&format!("{object:?}"), limits.value_length).into(),
+        )),
+        ZValRef::Res(resource) => Some(AnyValue::String(
+            util::truncate_string(&format!("{resource:?}"), limits.value_length).into(),
+        )),
+        ZValRef::Ref(reference) => any_value_with_limits(reference.val(), limits, depth),
+    }
+}
+
+pub fn otel_value_to_any(value: &Value) -> AnyValue {
+    match value {
+        Value::Bool(value) => AnyValue::Boolean(*value),
+        Value::I64(value) => AnyValue::Int(*value),
+        Value::F64(value) => AnyValue::Double(*value),
+        Value::String(value) => AnyValue::String(value.clone()),
+        Value::Array(Array::Bool(values)) => AnyValue::ListAny(Box::new(
+            values.iter().copied().map(AnyValue::Boolean).collect(),
+        )),
+        Value::Array(Array::I64(values)) => AnyValue::ListAny(Box::new(
+            values.iter().copied().map(AnyValue::Int).collect(),
+        )),
+        Value::Array(Array::F64(values)) => AnyValue::ListAny(Box::new(
+            values.iter().copied().map(AnyValue::Double).collect(),
+        )),
+        Value::Array(Array::String(values)) => AnyValue::ListAny(Box::new(
+            values.iter().cloned().map(AnyValue::String).collect(),
+        )),
+        _ => AnyValue::String(format!("{value:?}").into()),
+    }
+}
+
+pub fn set_attribute(state: &mut LogRecordState, key: String, value: &ZVal) {
+    let limits = util::attribute_limits(AttributeDestination::Log);
+    if !util::valid_attribute_key(&key, limits) {
+        return;
+    }
+    let Some(value) = attribute_any_value(value) else {
+        return;
     };
-    state.attributes.push(KeyValue::new(key, value));
+    set_any_attribute(state, key, value, limits);
+}
+
+fn set_any_attribute(
+    state: &mut LogRecordState,
+    key: String,
+    value: AnyValue,
+    limits: AttributeLimits,
+) {
+    if let Some((_, existing)) = state
+        .attributes
+        .iter_mut()
+        .find(|(existing, _)| existing == &key)
+    {
+        *existing = value;
+    } else if state.attributes.len() < limits.count {
+        state.attributes.push((key, value));
+    }
+}
+
+pub fn set_otel_attribute(state: &mut LogRecordState, attribute: opentelemetry::KeyValue) {
+    let limits = util::attribute_limits(AttributeDestination::Log);
+    if !util::valid_attribute_key(attribute.key.as_str(), limits) {
+        return;
+    }
+    set_any_attribute(
+        state,
+        attribute.key.as_str().to_string(),
+        otel_value_to_any(&attribute.value),
+        limits,
+    );
+}
+
+pub fn set_attributes(state: &mut LogRecordState, value: &ZVal) -> phper::Result<()> {
+    let iterable = crate::util::zval_iterable_to_array(value)?;
+    for (key, value) in iterable.expect_z_arr()?.iter() {
+        let key = match key {
+            IterKey::Index(index) => index.to_string(),
+            IterKey::ZStr(key) => key.to_str()?.to_string(),
+        };
+        set_attribute(state, key, value);
+    }
     Ok(())
 }
 
-pub fn make_log_record_class() -> ClassEntity<LogRecordState> {
+pub fn set_severity(state: &mut LogRecordState, value: &ZVal) -> phper::Result<()> {
+    let number = severity_number(value)?;
+    state.severity = otel_severity(number);
+    if state.severity.is_none() {
+        tracing::warn!("invalid OpenTelemetry log severity number {number}; value dropped");
+    }
+    Ok(())
+}
+
+pub fn nanos_to_system_time(nanos: i64) -> SystemTime {
+    let duration = std::time::Duration::from_nanos(nanos.unsigned_abs());
+    if nanos < 0 {
+        std::time::UNIX_EPOCH - duration
+    } else {
+        std::time::UNIX_EPOCH + duration
+    }
+}
+
+fn trace_context(context: &Context) -> Option<TraceContextData> {
+    let span = context.span();
+    let span_context = span.span_context();
+    span_context.is_valid().then(|| TraceContextData {
+        trace_id: span_context.trace_id(),
+        span_id: span_context.span_id(),
+        trace_flags: span_context.trace_flags(),
+    })
+}
+
+pub fn set_context(
+    state: &mut LogRecordState,
+    value: &ZVal,
+    context_class: &ContextClass,
+) -> phper::Result<()> {
+    match value.to_value()? {
+        ZValRef::Null => state.context = LogContext::Current,
+        ZValRef::Bool(false) => state.context = LogContext::None,
+        ZValRef::Obj(object)
+            if object
+                .get_class()
+                .is_instance_of(context_class.as_class_entry()) =>
+        {
+            let native = native_context_from_object(object)
+                .ok_or_else(|| phper::Error::boxed("Context object has no native context state"))?;
+            state.context = LogContext::Explicit(trace_context(&native));
+        }
+        _ => {
+            return Err(phper::Error::boxed(
+                "unsupported ContextInterface implementation",
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub fn selected_trace_context(context: LogContext) -> Option<TraceContextData> {
+    match context {
+        LogContext::Current => trace_context(&Context::current()),
+        LogContext::None => None,
+        LogContext::Explicit(context) => context,
+    }
+}
+
+fn self_return() -> ReturnType {
+    ReturnType::new(ReturnTypeHint::ClassEntry("self".to_string()))
+}
+
+pub fn make_log_record_class(context_class: ContextClass) -> ClassEntity<LogRecordState> {
     let mut class =
         ClassEntity::<LogRecordState>::new_with_default_state_constructor(LOG_RECORD_CLASS_NAME);
+    class.add_constant("NANOS_PER_SECOND", 1_000_000_000i64);
 
     class
         .add_method("__construct", Visibility::Public, |this, arguments| {
-            //if argument 1 (body) is provided, set it
-            if let Some(body_zval) = arguments.get(0) {
-                let body_str = body_zval.expect_z_str()?;
-                if !body_str.is_empty() {
-                    // Convert to owned String immediately to avoid lifetime issues
-                    let body_any = AnyValue::String(body_str.to_str()?.to_owned().into());
-                    this.as_mut_state().body = Some(body_any);
-                }
-            }
-            // Set trace context from current OpenTelemetry context if available
-            let ctx = Context::current();
-            let span = ctx.span();
-            let span_ctx = span.span_context();
-            if span_ctx.is_valid() {
-                this.as_mut_state().trace_id = Some(span_ctx.trace_id());
-                this.as_mut_state().span_id = Some(span_ctx.span_id());
-                this.as_mut_state().trace_flags = Some(span_ctx.trace_flags());
+            if let Some(body) = arguments.first() {
+                this.as_mut_state().body = any_value(body);
             }
             Ok::<_, phper::Error>(())
         })
-        .argument(phper::functions::Argument::new("body").optional().with_default_value("''").with_type_hint(phper::types::ArgumentTypeHint::String));
+        .argument(
+            Argument::new("body")
+                .with_type_hint(ArgumentTypeHint::Mixed)
+                .with_default_value("NULL"),
+        );
 
     class
         .add_method("setTimestamp", Visibility::Public, |this, arguments| {
-            // Accept nanoseconds since UNIX_EPOCH as int
-            let ts_zval = crate::util::arg(arguments, 0)?;
-            let nanos: u64 = ts_zval.expect_long()? as u64;
-            let system_time = std::time::UNIX_EPOCH
-                + std::time::Duration::from_secs(nanos / 1_000_000_000)
-                + std::time::Duration::from_nanos(nanos % 1_000_000_000);
-            tracing::debug!("Setting LogRecord timestamp to {:?}", system_time);
-            this.as_mut_state().timestamp = Some(system_time);
+            let nanos = crate::util::arg(arguments, 0)?.expect_long()?;
+            this.as_mut_state().timestamp = Some(nanos_to_system_time(nanos));
             Ok::<_, phper::Error>(this.to_ref_owned())
         })
-        .argument(phper::functions::Argument::new("timestamp").with_type_hint(ArgumentTypeHint::Int));
+        .argument(Argument::new("timestamp").with_type_hint(ArgumentTypeHint::Int))
+        .return_type(self_return());
 
     class
-        .add_method("setSeverityNumber", Visibility::Public, |this, arguments| {
-            let severity = crate::util::arg(arguments, 0)?.expect_long()? as u8;
-            let sev = match severity {
-                1 => Severity::Trace,
-                2 => Severity::Trace2,
-                3 => Severity::Trace3,
-                4 => Severity::Trace4,
-                5 => Severity::Debug,
-                6 => Severity::Debug2,
-                7 => Severity::Debug3,
-                8 => Severity::Debug4,
-                9 => Severity::Info,
-                10 => Severity::Info2,
-                11 => Severity::Info3,
-                12 => Severity::Info4,
-                13 => Severity::Warn,
-                14 => Severity::Warn2,
-                15 => Severity::Warn3,
-                16 => Severity::Warn4,
-                17 => Severity::Error,
-                18 => Severity::Error2,
-                19 => Severity::Error3,
-                20 => Severity::Error4,
-                21 => Severity::Fatal,
-                22 => Severity::Fatal2,
-                23 => Severity::Fatal3,
-                24 => Severity::Fatal4,
-                _ => Severity::Info,
-            };
-            this.as_mut_state().severity = Some(sev);
-            Ok::<_, phper::Error>(this.to_ref_owned())
-        })
-        .argument(phper::functions::Argument::new("severityNumber").with_type_hint(ArgumentTypeHint::Int));
+        .add_method(
+            "setObservedTimestamp",
+            Visibility::Public,
+            |this, arguments| {
+                this.as_mut_state().observed_timestamp = arguments
+                    .first()
+                    .and_then(ZVal::as_long)
+                    .map(nanos_to_system_time);
+                Ok::<_, phper::Error>(this.to_ref_owned())
+            },
+        )
+        .argument(
+            Argument::new("observedTimestamp")
+                .with_type_hint(ArgumentTypeHint::Int)
+                .allow_null()
+                .with_default_value("NULL"),
+        )
+        .return_type(self_return());
 
     class
-        .add_method("setBody", Visibility::Public, |this, arguments| {
-            let body_zval = crate::util::arg(arguments, 0)?;
-            let body_any = if let Ok(s) = body_zval.expect_z_str() {
-                // Convert to owned String immediately to avoid lifetime issues
-                AnyValue::String(s.to_str()?.to_owned().into())
-            } else if let Ok(i) = body_zval.expect_long() {
-                AnyValue::Int(i)
-            } else if let Ok(f) = body_zval.expect_double() {
-                AnyValue::Double(f)
-            } else if let Ok(b) = body_zval.expect_bool() {
-                AnyValue::Boolean(b)
-            } else {
-                // fallback: string representation using Debug
-                let s = format!("{:?}", body_zval);
-                AnyValue::String(s.into())
-            };
-            this.as_mut_state().body = Some(body_any);
+        .add_method("setContext", Visibility::Public, move |this, arguments| {
+            set_context(
+                this.as_mut_state(),
+                crate::util::arg(arguments, 0)?,
+                &context_class,
+            )?;
             Ok::<_, phper::Error>(this.to_ref_owned())
         })
-        .argument(phper::functions::Argument::new("body"));
+        .argument(
+            Argument::new("context")
+                .with_type_hint(ArgumentTypeHint::ClassEntry(CONTEXT_INTERFACE.to_string()))
+                .allow_null()
+                .with_default_value("NULL"),
+        )
+        .return_type(self_return());
+
+    class
+        .add_method(
+            "setSeverityNumber",
+            Visibility::Public,
+            |this, arguments| {
+                set_severity(this.as_mut_state(), crate::util::arg(arguments, 0)?)?;
+                Ok::<_, phper::Error>(this.to_ref_owned())
+            },
+        )
+        .argument(
+            Argument::new("severityNumber").with_type_hint(ArgumentTypeHint::Union(vec![
+                ArgumentTypeHint::ClassEntry(SEVERITY_ENUM.to_string()),
+                ArgumentTypeHint::Int,
+            ])),
+        )
+        .return_type(self_return());
 
     class
         .add_method("setSeverityText", Visibility::Public, |this, arguments| {
-            let text = crate::util::arg(arguments, 0)?.expect_z_str()?.to_str()?.to_owned();
-            this.as_mut_state().severity_text = Some(text);
-
+            this.as_mut_state().severity_text = Some(
+                crate::util::arg(arguments, 0)?
+                    .expect_z_str()?
+                    .to_str()?
+                    .to_string(),
+            );
             Ok::<_, phper::Error>(this.to_ref_owned())
         })
-        .argument(phper::functions::Argument::new("severityText"));
+        .argument(Argument::new("severityText").with_type_hint(ArgumentTypeHint::String))
+        .return_type(self_return());
+
+    class
+        .add_method("setBody", Visibility::Public, |this, arguments| {
+            this.as_mut_state().body = any_value(crate::util::arg(arguments, 0)?);
+            Ok::<_, phper::Error>(this.to_ref_owned())
+        })
+        .argument(
+            Argument::new("body")
+                .with_type_hint(ArgumentTypeHint::Mixed)
+                .with_default_value("NULL"),
+        )
+        .return_type(self_return());
 
     class
         .add_method("setAttribute", Visibility::Public, |this, arguments| {
-            let state = this.as_mut_state();
-            let key = crate::util::arg(arguments, 0)?.expect_z_str()?.to_str()?.to_string();
-            let value_zval = crate::util::arg(arguments, 1)?;
-            insert_attribute(state, key, value_zval)?;
+            let key = crate::util::arg(arguments, 0)?
+                .expect_z_str()?
+                .to_str()?
+                .to_string();
+            set_attribute(this.as_mut_state(), key, crate::util::arg(arguments, 1)?);
             Ok::<_, phper::Error>(this.to_ref_owned())
         })
-        .argument(Argument::new("key"))
-        .argument(Argument::new("value").optional());
+        .argument(Argument::new("name").with_type_hint(ArgumentTypeHint::String))
+        .argument(Argument::new("value").with_type_hint(ArgumentTypeHint::Mixed))
+        .return_type(self_return());
 
     class
         .add_method("setAttributes", Visibility::Public, |this, arguments| {
-            let state = this.as_mut_state();
-            let attrs_zval = crate::util::arg(arguments, 0)?;
-            let attrs_arr = attrs_zval.expect_z_arr()?;
-            for (k, v) in attrs_arr.iter() {
-                // Support both string and integer keys
-                let key = match k {
-                    phper::arrays::IterKey::ZStr(zs) => zs.to_str()?.to_string(),
-                    phper::arrays::IterKey::Index(i) => i.to_string(),
-                };
-                insert_attribute(state, key, v)?;
-            }
+            set_attributes(this.as_mut_state(), crate::util::arg(arguments, 0)?)?;
             Ok::<_, phper::Error>(this.to_ref_owned())
         })
-        .argument(Argument::new("attributes"));
+        .argument(Argument::new("attributes").with_type_hint(ArgumentTypeHint::Iterable))
+        .return_type(self_return());
 
     class
         .add_method("setEventName", Visibility::Public, |this, arguments| {
-            let name = crate::util::arg(arguments, 0)?.expect_z_str()?.to_str()?.to_owned();
-            this.as_mut_state().event_name = Some(name);
+            this.as_mut_state().event_name = Some(
+                crate::util::arg(arguments, 0)?
+                    .expect_z_str()?
+                    .to_str()?
+                    .to_string(),
+            );
             Ok::<_, phper::Error>(this.to_ref_owned())
         })
-        .argument(phper::functions::Argument::new("eventName"));
+        .argument(Argument::new("eventName").with_type_hint(ArgumentTypeHint::String))
+        .return_type(self_return());
 
     class
 }

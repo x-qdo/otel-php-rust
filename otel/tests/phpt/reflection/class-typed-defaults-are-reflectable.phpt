@@ -8,7 +8,7 @@ otel
 --FILE--
 <?php
 use OpenTelemetry\API\Globals;
-use OpenTelemetry\API\Propagation\TraceContextPropagator;
+use OpenTelemetry\API\Trace\Propagation\TraceContextPropagator;
 
 $context = (new ReflectionMethod(TraceContextPropagator::class, 'inject'))->getParameters()[2];
 var_dump($context->getName(), (string) $context->getType(), $context->isOptional(), $context->isDefaultValueAvailable());

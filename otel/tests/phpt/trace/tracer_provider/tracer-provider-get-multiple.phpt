@@ -7,12 +7,8 @@ otel
 use OpenTelemetry\API\Globals;
 
 $one = Globals::tracerProvider();
-var_dump($one);
 $two = Globals::tracerProvider();
-var_dump($two);
+var_dump($one === $two);
 ?>
---EXPECTF--
-object(OpenTelemetry\API\Trace\TracerProvider)#1 (0) {
-}
-object(OpenTelemetry\API\Trace\TracerProvider)#2 (0) {
-}
+--EXPECT--
+bool(true)

@@ -5,7 +5,7 @@ otel
 --ENV--
 OTEL_TRACES_EXPORTER=memory
 OTEL_LOGS_EXPORTER=memory
-OTEL_SPAN_PROCESSOR=simple
+OTEL_METRICS_EXPORTER=memory
 OTEL_SPAN_PROCESSOR=simple
 --INI--
 otel.cli.enabled=1
@@ -17,7 +17,10 @@ $tracerProvider = Globals::tracerProvider();
 var_dump(get_class($tracerProvider));
 $loggerProvider = Globals::loggerProvider();
 var_dump(get_class($loggerProvider));
+$meterProvider = Globals::meterProvider();
+var_dump(get_class($meterProvider));
 ?>
 --EXPECT--
 string(38) "OpenTelemetry\API\Trace\TracerProvider"
 string(37) "OpenTelemetry\API\Logs\LoggerProvider"
+string(39) "OpenTelemetry\API\Metrics\MeterProvider"

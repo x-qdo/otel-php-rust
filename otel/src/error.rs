@@ -43,6 +43,22 @@ pub fn php_exception_to_attributes(exception: &mut ZObj) -> Vec<KeyValue> {
     attributes
 }
 
+/// Convert an automatically observed exception without reading its message or
+/// stack unless sensitive capture was explicitly enabled. Manual API calls use
+/// `php_exception_to_attributes()` and retain the official exception contract.
+pub fn php_exception_to_auto_attributes(exception: &mut ZObj) -> Vec<KeyValue> {
+    if crate::config::sensitive_data::capture() {
+        return php_exception_to_attributes(exception);
+    }
+    let exception_type = exception
+        .get_class()
+        .get_name()
+        .to_str()
+        .unwrap_or("Unknown")
+        .to_owned();
+    vec![KeyValue::new("exception.type", exception_type)]
+}
+
 /// convert the result of error_get_last() to a vector of KeyValue attributes
 pub fn php_error_to_attributes(error: &ZVal) -> Vec<KeyValue> {
     let mut attributes = vec![];
@@ -67,4 +83,13 @@ pub fn php_error_to_attributes(error: &ZVal) -> Vec<KeyValue> {
         }
     }
     attributes
+}
+
+/// Safe-by-default conversion for fatal errors observed by request shutdown.
+pub fn php_error_to_auto_attributes(error: &ZVal) -> Vec<KeyValue> {
+    if crate::config::sensitive_data::capture() {
+        php_error_to_attributes(error)
+    } else {
+        vec![KeyValue::new("exception.type", "PHP fatal error")]
+    }
 }

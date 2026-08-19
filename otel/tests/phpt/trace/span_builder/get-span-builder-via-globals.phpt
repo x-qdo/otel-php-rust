@@ -15,9 +15,9 @@ $builder = $tracer->spanBuilder('root');
 var_dump($builder);
 ?>
 --EXPECTF--
-object(OpenTelemetry\API\Trace\TracerProvider)#1 (0) {
+object(OpenTelemetry\API\Trace\TracerProvider)#%d (0) {
 }
-object(OpenTelemetry\API\Trace\Tracer)#2 (0) {
+object(OpenTelemetry\API\Trace\Tracer)#%d (0) {
 }
-object(OpenTelemetry\API\Trace\SpanBuilder)#3 (0) {
+object(OpenTelemetry\API\Trace\SpanBuilder)#%d (0) {
 }

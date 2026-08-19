@@ -1,7 +1,7 @@
 use phper::{
     classes::{ClassEntity, Interface, StateClass, Visibility},
-    functions::Argument,
-    types::ArgumentTypeHint,
+    functions::{Argument, ReturnType},
+    types::{ArgumentTypeHint, ReturnTypeHint},
 };
 use std::{
     convert::Infallible,
@@ -46,7 +46,16 @@ pub fn make_tracer_class(
             }
             Ok::<_, phper::Error>(object)
         })
-        .argument(Argument::new("spanName").with_type_hint(ArgumentTypeHint::String));
+        .argument(Argument::new("spanName").with_type_hint(ArgumentTypeHint::String))
+        .return_type(ReturnType::new(ReturnTypeHint::ClassEntry(String::from(
+            r"OpenTelemetry\API\Trace\SpanBuilderInterface",
+        ))));
+
+    class
+        .add_method("isEnabled", Visibility::Public, |this, _| {
+            Ok::<_, Infallible>(this.as_state().is_some())
+        })
+        .return_type(ReturnType::new(ReturnTypeHint::Bool));
 
     class
 }

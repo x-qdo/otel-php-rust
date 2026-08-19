@@ -21,7 +21,7 @@ var_dump([
 ]);
 ?>
 --EXPECTF--
-object(OpenTelemetry\API\Trace\NonRecordingSpan)#1 (0) {
+object(OpenTelemetry\API\Trace\NonRecordingSpan)#%d (0) {
 }
 array(5) {
   ["trace_id"]=>

@@ -26,14 +26,17 @@ use std::env;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 pub mod context;
+pub mod baggage;
 pub mod trace;
 pub mod class_registry;
 pub mod config;
 pub mod error;
 pub mod globals;
 pub mod request;
+pub mod signals;
 pub mod logging;
 pub mod logs;
+pub mod metrics;
 pub mod runtime;
 pub mod util;
 pub mod module;

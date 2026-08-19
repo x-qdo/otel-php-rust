@@ -714,6 +714,8 @@ impl<T: 'static> ClassEntity<T> {
 
             self.bound_class.bind(class_ce);
 
+            crate::functions::install_intersection_types(class_ce, &self.method_entities);
+
             // Registration copies ce_flags, so flags set on the registered
             // entry are honoured by inheritance and instantiation checks.
             (*class_ce).ce_flags |= self.ce_flags;
@@ -916,6 +918,8 @@ impl InterfaceEntity {
             );
 
             self.bound_interface.bind(class_ce);
+
+            crate::functions::install_intersection_types(class_ce, &self.method_entities);
 
             for interface in &self.extends {
                 let interface_ce = interface.as_class_entry().as_ptr();

@@ -117,6 +117,16 @@ fn compute_config_hash() -> String {
         "OTEL_EXPORTER_OTLP_INSECURE",
         "OTEL_EXPORTER_OTLP_TRACES_INSECURE",
         "OTEL_SPAN_PROCESSOR",
+        "OTEL_ATTRIBUTE_COUNT_LIMIT",
+        "OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT",
+        "OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT",
+        "OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT",
+        "OTEL_EVENT_ATTRIBUTE_COUNT_LIMIT",
+        "OTEL_LINK_ATTRIBUTE_COUNT_LIMIT",
+        "OTEL_SPAN_EVENT_COUNT_LIMIT",
+        "OTEL_SPAN_LINK_COUNT_LIMIT",
+        "OTEL_PHP_ATTRIBUTE_KEY_LENGTH_LIMIT",
+        "OTEL_PHP_ATTRIBUTE_ARRAY_LENGTH_LIMIT",
         "OTEL_BSP_MAX_QUEUE_SIZE",
         "OTEL_BSP_MAX_EXPORT_BATCH_SIZE",
         "OTEL_BSP_SCHEDULE_DELAY",
@@ -240,6 +250,7 @@ pub fn init_once() {
         let provider = SdkTracerProvider::builder()
             .with_resource(Resource::builder_empty().build())
             .with_sampler(AlwaysOff)
+            .with_span_limits(util::trace_span_limits())
             .build();
         providers.insert(
             key,
@@ -294,7 +305,7 @@ pub fn init_once() {
         ))
         .build();
 
-    let mut builder = SdkTracerProvider::builder();
+    let mut builder = SdkTracerProvider::builder().with_span_limits(util::trace_span_limits());
     if exporter_name == "console" {
         tracing::debug!("Using Console trace exporter");
         let exporter = StdoutSpanExporter::default();
@@ -543,7 +554,10 @@ pub fn make_tracer_provider_class(
                 .and_then(|s| s.to_str().ok())
                 .map(util::intern);
 
-            let attributes = arguments.get(3).and_then(|arg| arg.as_z_arr());
+            let attributes = arguments
+                .get(3)
+                .map(util::zval_iterable_to_array)
+                .transpose()?;
 
             let mut scope_builder = InstrumentationScope::builder(name);
             if let Some(version) = version {
@@ -553,8 +567,10 @@ pub fn make_tracer_provider_class(
                 scope_builder = scope_builder.with_schema_url(schema_url);
             }
             if let Some(attributes) = attributes {
-                scope_builder =
-                    scope_builder.with_attributes(util::zval_arr_to_key_value_vec(attributes));
+                scope_builder = scope_builder.with_attributes(util::zval_arr_to_key_value_vec(
+                    attributes.expect_z_arr()?,
+                    util::AttributeDestination::Scope,
+                ));
             }
             let scope = scope_builder.build();
 
@@ -564,19 +580,19 @@ pub fn make_tracer_provider_class(
         .argument(Argument::new("name").with_type_hint(ArgumentTypeHint::String))
         .argument(
             Argument::new("version")
-                .optional()
                 .with_type_hint(ArgumentTypeHint::String)
-                .allow_null(),
+                .allow_null()
+                .with_default_value("NULL"),
         )
         .argument(
             Argument::new("schemaUrl")
-                .optional()
                 .with_type_hint(ArgumentTypeHint::String)
-                .allow_null(),
+                .allow_null()
+                .with_default_value("NULL"),
         )
         .argument(
             Argument::new("attributes")
-                .with_type_hint(ArgumentTypeHint::ClassEntry(String::from("Iterable")))
+                .with_type_hint(ArgumentTypeHint::Iterable)
                 .with_default_value("[]"),
         )
         .return_type(ReturnType::new(ReturnTypeHint::ClassEntry(String::from(

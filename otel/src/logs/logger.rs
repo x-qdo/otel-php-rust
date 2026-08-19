@@ -1,3 +1,10 @@
+use crate::logs::{
+    log_record::{LOG_RECORD_CLASS_NAME, LogRecordState, selected_trace_context},
+    log_record_builder::{LogRecordBuilderClass, LogRecordBuilderState},
+};
+use once_cell::sync::Lazy;
+use opentelemetry::logs::{LogRecord, Logger};
+use opentelemetry_sdk::logs::SdkLogger;
 use phper::{
     classes::{ClassEntity, Interface, StateClass, Visibility},
     functions::{Argument, ReturnType},
@@ -6,77 +13,86 @@ use phper::{
 use std::{
     collections::HashSet,
     convert::Infallible,
-    sync::Mutex,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
-use once_cell::sync::Lazy;
-use opentelemetry::logs::{
-    Logger,
-    LogRecord,
-};
-use opentelemetry_sdk::logs::SdkLogger;
-use crate::logs::log_record::{LOG_RECORD_CLASS_NAME, LogRecordState};
 
-pub type LoggerClass = StateClass<Option<SdkLogger>>;
+pub const LOGGER_CLASS_NAME: &str = r"OpenTelemetry\API\Logs\Logger";
+const MAX_INTERNED_LOG_STRINGS: usize = 4_096;
+const CARDINALITY_FALLBACK: &str = "<otel-cardinality-limit>";
 
-const LOGGER_CLASS_NAME: &str = r"OpenTelemetry\API\Logs\Logger";
-static EVENT_NAMES: Lazy<Mutex<HashSet<&'static str>>> = Lazy::new(|| Mutex::new(HashSet::new()));
+static LOG_STRINGS: Lazy<Mutex<HashSet<&'static str>>> = Lazy::new(|| Mutex::new(HashSet::new()));
+static CARDINALITY_WARNING: AtomicBool = AtomicBool::new(false);
 
-/// Intern event names to avoid leaking memory since opentelemetry-rust requires &'static str
-/// This only reduces memory leaks by re-using event names, but does not eliminate them
-fn get_or_intern_event_name(name: &str) -> &'static str {
-    let mut set = EVENT_NAMES
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(&existing) = set.get(name) {
-        existing
-    } else {
-        let leaked: &'static str = Box::leak(name.to_owned().into_boxed_str());
-        set.insert(leaked);
-        leaked
-    }
+#[derive(Clone, Default)]
+pub struct LoggerState {
+    pub logger: Option<SdkLogger>,
+    pub enabled: bool,
 }
 
-/// Map severity text to static str using opentelemetry::logs::Severity
-fn map_severity_text(text: &str) -> Option<&'static str> {
-    use opentelemetry::logs::Severity;
-    match text {
-        "TRACE" => Some(Severity::Trace.name()),
-        "TRACE2" => Some(Severity::Trace2.name()),
-        "TRACE3" => Some(Severity::Trace3.name()),
-        "TRACE4" => Some(Severity::Trace4.name()),
-        "DEBUG" => Some(Severity::Debug.name()),
-        "DEBUG2" => Some(Severity::Debug2.name()),
-        "DEBUG3" => Some(Severity::Debug3.name()),
-        "DEBUG4" => Some(Severity::Debug4.name()),
-        "INFO" => Some(Severity::Info.name()),
-        "INFO2" => Some(Severity::Info2.name()),
-        "INFO3" => Some(Severity::Info3.name()),
-        "INFO4" => Some(Severity::Info4.name()),
-        "WARN" => Some(Severity::Warn.name()),
-        "WARN2" => Some(Severity::Warn2.name()),
-        "WARN3" => Some(Severity::Warn3.name()),
-        "WARN4" => Some(Severity::Warn4.name()),
-        "ERROR" => Some(Severity::Error.name()),
-        "ERROR2" => Some(Severity::Error2.name()),
-        "ERROR3" => Some(Severity::Error3.name()),
-        "ERROR4" => Some(Severity::Error4.name()),
-        "FATAL" => Some(Severity::Fatal.name()),
-        "FATAL2" => Some(Severity::Fatal2.name()),
-        "FATAL3" => Some(Severity::Fatal3.name()),
-        "FATAL4" => Some(Severity::Fatal4.name()),
-        _ => {
-            tracing::warn!("Unknown severity text: {}", text);
-            None
-        }
+pub type LoggerClass = StateClass<LoggerState>;
+
+/// The Rust logs trait currently requires `&'static str` for event/severity
+/// text. Bound the process-lifetime interner so attacker-controlled event names
+/// cannot become an unbounded worker leak.
+fn intern_log_string(value: &str) -> &'static str {
+    let mut values = LOG_STRINGS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(existing) = values.get(value) {
+        return existing;
     }
+    if values.len() >= MAX_INTERNED_LOG_STRINGS {
+        if !CARDINALITY_WARNING.swap(true, Ordering::Relaxed) {
+            tracing::warn!(
+                "log event/severity string cardinality exceeded {MAX_INTERNED_LOG_STRINGS}; new values use a bounded fallback"
+            );
+        }
+        return CARDINALITY_FALLBACK;
+    }
+    let value = Box::leak(value.to_string().into_boxed_str());
+    values.insert(value);
+    value
+}
+
+pub fn emit_state(logger: &SdkLogger, state: &LogRecordState) {
+    let mut record = logger.create_log_record();
+    if let Some(severity) = state.severity {
+        record.set_severity_number(severity);
+    }
+    if let Some(body) = &state.body {
+        record.set_body(body.clone());
+    }
+    if let Some(severity_text) = &state.severity_text {
+        record.set_severity_text(intern_log_string(severity_text));
+    }
+    if let Some(event_name) = &state.event_name {
+        record.set_event_name(intern_log_string(event_name));
+    }
+    if let Some(timestamp) = state.timestamp {
+        record.set_timestamp(timestamp);
+    }
+    if let Some(timestamp) = state.observed_timestamp {
+        record.set_observed_timestamp(timestamp);
+    }
+    if let Some(context) = selected_trace_context(state.context) {
+        record.set_trace_context(context.trace_id, context.span_id, Some(context.trace_flags));
+    }
+    for (key, value) in &state.attributes {
+        record.add_attribute(key.clone(), value.clone());
+    }
+    logger.emit(record);
 }
 
 pub fn make_logger_class(
     logger_interface: Interface,
-) -> ClassEntity<Option<SdkLogger>> {
-    let mut class =
-        ClassEntity::<Option<SdkLogger>>::new_with_default_state_constructor(LOGGER_CLASS_NAME);
-
+    builder_class: LogRecordBuilderClass,
+) -> ClassEntity<LoggerState> {
+    let mut class: ClassEntity<LoggerState> =
+        ClassEntity::new_with_default_state_constructor(LOGGER_CLASS_NAME);
+    class.set_final();
     class.implements(logger_interface);
     class.add_method("__construct", Visibility::Private, |_, _| {
         Ok::<_, Infallible>(())
@@ -84,66 +100,64 @@ pub fn make_logger_class(
 
     class
         .add_method("emit", Visibility::Public, |this, arguments| {
-            tracing::debug!("Logger::emit called");
-            // A logger without native state (created without its state, e.g.
-            // by reflection) has no provider to emit to and drops the record.
-            let Some(logger): Option<&SdkLogger> = this.as_state().as_ref() else {
-                tracing::debug!("Logger::emit on a logger without native state; record dropped");
+            let state = this.as_state();
+            if !state.enabled {
                 return Ok::<_, phper::Error>(());
+            }
+            let Some(logger) = &state.logger else {
+                return Ok(());
             };
-
-            let record_zval = crate::util::arg(arguments, 0)?;
-            let record_obj = record_zval.expect_z_obj();
-            let record_state = unsafe { record_obj?.as_state_obj::<LogRecordState>().as_state() };
-
-            // Build the log record using the logger's builder
-            let mut log_record = logger.create_log_record();
-
-            if let Some(severity) = record_state.severity {
-                log_record.set_severity_number(severity);
-            }
-            if let Some(ref body) = record_state.body {
-                log_record.set_body(body.clone());
-            }
-            if let Some(ref severity_text) = record_state.severity_text {
-                if let Some(static_str) = map_severity_text(severity_text.as_str()) {
-                    log_record.set_severity_text(static_str);
-                }
-            }
-            if let Some(ref event_name) = record_state.event_name {
-                let static_str: &'static str = get_or_intern_event_name(event_name.as_str());
-                log_record.set_event_name(static_str);
-            }
-            if let (Some(trace_id), Some(span_id)) = (record_state.trace_id, record_state.span_id) {
-                log_record.set_trace_context(
-                    trace_id,
-                    span_id,
-                    record_state.trace_flags,
-                );
-            }
-            if let Some(timestamp) = record_state.timestamp {
-                log_record.set_timestamp(timestamp);
-            }
-            if !record_state.attributes.is_empty() {
-                for attr in &record_state.attributes {
-                    let any_value = match &attr.value {
-                        opentelemetry::Value::String(s) => opentelemetry::logs::AnyValue::String(s.clone()),
-                        opentelemetry::Value::Bool(b) => opentelemetry::logs::AnyValue::Boolean(*b),
-                        opentelemetry::Value::I64(i) => opentelemetry::logs::AnyValue::Int(*i),
-                        opentelemetry::Value::F64(f) => opentelemetry::logs::AnyValue::Double(*f),
-                        _ => opentelemetry::logs::AnyValue::String(format!("{:?}", attr.value).into()),
-                    };
-                    log_record.add_attribute(attr.key.clone(), any_value);
-                }
-            }
-            tracing::debug!("Built LogRecord: {:?}", log_record);
-
-            logger.emit(log_record);
-
-            Ok::<_, phper::Error>(())
+            let record = crate::util::arg(arguments, 0)?.expect_z_obj()?;
+            let record = unsafe { record.as_state_obj::<LogRecordState>().as_state() };
+            emit_state(logger, record);
+            Ok(())
         })
-        .argument(Argument::new("record").with_type_hint(ArgumentTypeHint::ClassEntry(String::from(LOG_RECORD_CLASS_NAME))))
+        .argument(
+            Argument::new("logRecord").with_type_hint(ArgumentTypeHint::ClassEntry(
+                LOG_RECORD_CLASS_NAME.to_string(),
+            )),
+        )
         .return_type(ReturnType::new(ReturnTypeHint::Void));
+
+    class
+        .add_method("logRecordBuilder", Visibility::Public, move |this, _| {
+            let mut object = builder_class.init_object()?;
+            *object.as_mut_state() = LogRecordBuilderState {
+                logger: this.as_state().logger.clone(),
+                enabled: this.as_state().enabled,
+                record: LogRecordState::default(),
+            };
+            Ok::<_, phper::Error>(object)
+        })
+        .return_type(ReturnType::new(ReturnTypeHint::ClassEntry(
+            r"OpenTelemetry\API\Logs\LogRecordBuilderInterface".to_string(),
+        )));
+
+    class
+        .add_method("isEnabled", Visibility::Public, |this, _| {
+            Ok::<_, Infallible>(this.as_state().enabled)
+        })
+        .argument(
+            Argument::new("context")
+                .with_type_hint(ArgumentTypeHint::ClassEntry(
+                    r"OpenTelemetry\Context\ContextInterface".to_string(),
+                ))
+                .allow_null()
+                .with_default_value("NULL"),
+        )
+        .argument(
+            Argument::new("severityNumber")
+                .with_type_hint(ArgumentTypeHint::Int)
+                .allow_null()
+                .with_default_value("NULL"),
+        )
+        .argument(
+            Argument::new("eventName")
+                .with_type_hint(ArgumentTypeHint::String)
+                .allow_null()
+                .with_default_value("NULL"),
+        )
+        .return_type(ReturnType::new(ReturnTypeHint::Bool));
 
     class
 }

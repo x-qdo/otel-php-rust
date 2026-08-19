@@ -1,5 +1,5 @@
 --TEST--
-Userland subclasses of native classes create state objects and dispatch inherited typed methods
+Userland Span implementations and native provider subclasses dispatch inherited typed methods
 --EXTENSIONS--
 otel
 --INI--
@@ -9,21 +9,35 @@ OTEL_TRACES_EXPORTER=memory
 OTEL_SPAN_PROCESSOR=simple
 --FILE--
 <?php
-use OpenTelemetry\API\Trace\NonRecordingSpan;
+use OpenTelemetry\API\Trace\Span;
+use OpenTelemetry\API\Trace\SpanContext;
+use OpenTelemetry\API\Trace\SpanContextInterface;
 use OpenTelemetry\API\Trace\SpanExporter\Memory;
+use OpenTelemetry\API\Trace\SpanInterface;
 use OpenTelemetry\API\Trace\TracerProvider;
 use OpenTelemetry\Context\Context;
 
 // PHP copies internal functions into the arena for userland subclasses; the
-// inherited typed methods (isRecording(): bool, getTracer(string), ...) must still
-// reach the native handlers, and object creation must resolve the native state.
-class SubSpan extends NonRecordingSpan {
+// inherited typed methods (storeInContext(), getTracer(string), ...) must still
+// reach the native handlers, and object creation must resolve native state.
+class SubSpan extends Span {
+    public function getContext(): SpanContextInterface { return SpanContext::getInvalid(); }
+    public function isRecording(): bool { return false; }
+    public function setAttribute(string $key, bool|int|float|string|array|null $value): SpanInterface { return $this; }
+    public function setAttributes(iterable $attributes): SpanInterface { return $this; }
+    public function addLink(SpanContextInterface $context, iterable $attributes = []): SpanInterface { return $this; }
+    public function addEvent(string $name, iterable $attributes = [], ?int $timestamp = null): SpanInterface { return $this; }
+    public function recordException(Throwable $exception, iterable $attributes = []): SpanInterface { return $this; }
+    public function updateName(string $name): SpanInterface { return $this; }
+    public function setStatus(string $code, ?string $description = null): SpanInterface { return $this; }
+    public function end(?int $endEpochNanos = null): void {}
     public function extra(): string { return 'sub'; }
 }
 class SubProvider extends TracerProvider {}
 
-$span = (new ReflectionClass(SubSpan::class))->newInstanceWithoutConstructor();
+$span = new SubSpan();
 var_dump($span->isRecording(), $span->extra(), $span->getContext()->isValid());
+var_dump(Span::fromContext($span->storeInContext(Context::getRoot())) === $span);
 
 $provider = (new ReflectionClass(SubProvider::class))->newInstanceWithoutConstructor();
 $tracer = $provider->getTracer('sub-tracer', '1.0');
@@ -48,7 +62,8 @@ bool(false)
 string(3) "sub"
 bool(false)
 bool(true)
-string(28) "OpenTelemetry\API\Trace\Span"
+bool(true)
+string(34) "OpenTelemetry\API\Trace\NativeSpan"
 string(29) "OpenTelemetry\Context\Context"
 int(2)
 string(4) "root"

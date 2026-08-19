@@ -41,15 +41,15 @@ var_dump(Memory::count());
 echo "done\n";
 ?>
 --EXPECT--
-ArgumentCountError: OpenTelemetry\API\Trace\Span::setAttribute(): expects at least 1 parameter(s), 0 given
-ArgumentCountError: OpenTelemetry\API\Trace\Span::setAttribute(): expects at least 2 parameter(s), 1 given
-ArgumentCountError: OpenTelemetry\API\Trace\Span::setAttributes(): expects at least 1 parameter(s), 0 given
-ArgumentCountError: OpenTelemetry\API\Trace\Span::updateName(): expects at least 1 parameter(s), 0 given
-ArgumentCountError: OpenTelemetry\API\Trace\Span::addEvent(): expects at least 1 parameter(s), 0 given
-ArgumentCountError: OpenTelemetry\API\Trace\Span::addLink(): expects at least 1 parameter(s), 0 given
-ArgumentCountError: OpenTelemetry\API\Trace\Span::recordException(): expects at least 1 parameter(s), 0 given
+ArgumentCountError: OpenTelemetry\API\Trace\NativeSpan::setAttribute(): expects at least 2 parameter(s), 0 given
+ArgumentCountError: OpenTelemetry\API\Trace\NativeSpan::setAttribute(): expects at least 2 parameter(s), 1 given
+ArgumentCountError: OpenTelemetry\API\Trace\NativeSpan::setAttributes(): expects at least 1 parameter(s), 0 given
+ArgumentCountError: OpenTelemetry\API\Trace\NativeSpan::updateName(): expects at least 1 parameter(s), 0 given
+ArgumentCountError: OpenTelemetry\API\Trace\NativeSpan::addEvent(): expects at least 1 parameter(s), 0 given
+ArgumentCountError: OpenTelemetry\API\Trace\NativeSpan::addLink(): expects at least 1 parameter(s), 0 given
+ArgumentCountError: OpenTelemetry\API\Trace\NativeSpan::recordException(): expects at least 1 parameter(s), 0 given
 ArgumentCountError: OpenTelemetry\API\Trace\Span::storeInContext(): expects at least 1 parameter(s), 0 given
-ArgumentCountError: OpenTelemetry\API\Trace\SpanContext::create(): expects at least 1 parameter(s), 0 given
+ArgumentCountError: OpenTelemetry\API\Trace\SpanContext::create(): expects at least 2 parameter(s), 0 given
 ArgumentCountError: OpenTelemetry\API\Trace\SpanContext::create(): expects at least 2 parameter(s), 1 given
 ArgumentCountError: OpenTelemetry\API\Trace\TracerProvider::getTracer(): expects at least 1 parameter(s), 0 given
 int(1)

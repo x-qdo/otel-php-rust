@@ -40,7 +40,7 @@ $severities = [
     "FATAL2",
     "FATAL3",
     "FATAL4",
-    "UNKNOWN", //should be ignored, warning emitted
+    "UNKNOWN", //custom severity text is permitted by the Logs API
 ];
 
 $logger = Globals::loggerProvider()->getLogger("my_logger", '0.1', 'schema.url', ['one' => 1]);
@@ -57,8 +57,7 @@ foreach ($exported as $log) {
 }
 
 ?>
---EXPECTF--
-%s[WARN]%sUnknown severity text: UNKNOWN
+--EXPECT--
 int(25)
 string(5) "TRACE"
 string(6) "TRACE2"
@@ -84,4 +83,4 @@ string(5) "FATAL"
 string(6) "FATAL2"
 string(6) "FATAL3"
 string(6) "FATAL4"
-string(0) ""
+string(7) "UNKNOWN"

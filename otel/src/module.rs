@@ -2,6 +2,7 @@ use crate::{
     config,
     logging,
     logs::logger_provider,
+    metrics::meter_provider,
     util::get_sapi_module_name,
     auto,
     trace::tracer_provider,
@@ -50,6 +51,7 @@ pub fn on_module_shutdown() {
     tracing::debug!("OpenTelemetry::MSHUTDOWN");
     tracer_provider::shutdown();
     logger_provider::shutdown();
+    meter_provider::shutdown();
 }
 
 pub fn is_disabled() -> bool {

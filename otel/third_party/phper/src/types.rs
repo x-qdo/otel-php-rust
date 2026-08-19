@@ -246,6 +246,8 @@ pub enum ArgumentTypeHint {
     /// Union typehint (php 8.0+): at most one `ClassEntry` member plus scalar
     /// members, e.g. `Severity|int` or `float|int`.
     Union(Vec<ArgumentTypeHint>),
+    /// Intersection of class/interface types (php 8.1+).
+    Intersection(Vec<String>),
     /// `false` pseudo-type, only meaningful as a union member.
     False,
 }
@@ -263,7 +265,11 @@ impl ArgumentTypeHint {
             Self::Object => Some(MAY_BE_OBJECT),
             Self::Callable => Some(MAY_BE_CALLABLE),
             Self::False => Some(MAY_BE_FALSE),
-            Self::Iterable | Self::Mixed | Self::ClassEntry(_) | Self::Union(_) => None,
+            Self::Iterable
+            | Self::Mixed
+            | Self::ClassEntry(_)
+            | Self::Union(_)
+            | Self::Intersection(_) => None,
         }
     }
 
@@ -281,7 +287,7 @@ impl ArgumentTypeHint {
             Self::Callable => Some(IS_CALLABLE),
             Self::Iterable => Some(IS_ITERABLE),
             Self::Mixed => Some(IS_MIXED),
-            Self::ClassEntry(_) | Self::Union(_) | Self::False => None,
+            Self::ClassEntry(_) | Self::Union(_) | Self::Intersection(_) | Self::False => None,
         }
     }
 }
@@ -320,6 +326,8 @@ pub enum ReturnTypeHint {
     /// Union typehint (php 8.0+): at most one `ClassEntry` member plus scalar
     /// members.
     Union(Vec<ReturnTypeHint>),
+    /// Intersection of class/interface types (php 8.1+).
+    Intersection(Vec<String>),
 }
 
 impl ReturnTypeHint {
@@ -337,7 +345,11 @@ impl ReturnTypeHint {
             Self::Static => Some(MAY_BE_STATIC),
             Self::Void => Some(MAY_BE_VOID),
             Self::Never => Some(MAY_BE_NEVER),
-            Self::Iterable | Self::Mixed | Self::ClassEntry(_) | Self::Union(_) => None,
+            Self::Iterable
+            | Self::Mixed
+            | Self::ClassEntry(_)
+            | Self::Union(_)
+            | Self::Intersection(_) => None,
         }
     }
 
@@ -355,7 +367,12 @@ impl ReturnTypeHint {
             Self::Callable => Some(IS_CALLABLE),
             Self::Iterable => Some(IS_ITERABLE),
             Self::Mixed => Some(IS_MIXED),
-            Self::ClassEntry(_) | Self::Never | Self::Void | Self::Static | Self::Union(_) => None,
+            Self::ClassEntry(_)
+            | Self::Never
+            | Self::Void
+            | Self::Static
+            | Self::Union(_)
+            | Self::Intersection(_) => None,
         }
     }
 }

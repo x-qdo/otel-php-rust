@@ -291,7 +291,8 @@ impl Enum {
     /// Callers must ensure the enum and case name are valid before calling this
     /// function.
     pub unsafe fn get_mut_case<'a>(
-        &mut self, case_name: impl AsRef<str>,
+        &mut self,
+        case_name: impl AsRef<str>,
     ) -> crate::Result<&'a mut ZObj> {
         unsafe {
             let ce = self.as_class_entry().as_ptr() as *mut _;
@@ -386,7 +387,10 @@ impl<B: EnumBackingType> EnumEntity<B> {
     /// A mutable reference to the created `MethodEntity` for further
     /// configuration
     pub fn add_static_method<F, Z, E>(
-        &mut self, name: impl Into<String>, vis: Visibility, handler: F,
+        &mut self,
+        name: impl Into<String>,
+        vis: Visibility,
+        handler: F,
     ) -> &mut MethodEntity
     where
         F: Fn(&mut [ZVal]) -> Result<Z, E> + 'static,
@@ -486,6 +490,10 @@ impl<B: EnumBackingType> EnumEntity<B> {
                 backing_type,
                 self.function_entries(),
             );
+            // PHP enums are intrinsically final. zend_register_internal_enum()
+            // does not set the reflection flag for internal enums, so mirror
+            // the metadata produced for userland enums explicitly.
+            (*class_ce).ce_flags |= ZEND_ACC_FINAL;
 
             self.bound_enum.bind(class_ce);
 
@@ -516,7 +524,9 @@ impl<B: EnumBackingType> EnumEntity<B> {
 /// * `case_name` - Name of the enum case
 /// * `case_value` - Value associated with the case
 unsafe fn register_enum_case(
-    class_ce: *mut zend_class_entry, case_name: &CStr, case_value: &Scalar,
+    class_ce: *mut zend_class_entry,
+    case_name: &CStr,
+    case_value: &Scalar,
 ) {
     unsafe {
         match case_value {

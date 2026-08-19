@@ -34,11 +34,96 @@ use std::{
     rc::Rc,
 };
 
+/// Build the persistent Zend type-list used directly by PHP 8.3+ arginfo.
+unsafe fn intersection_type(class_names: &[String]) -> zend_type {
+    assert!(
+        class_names.len() >= 2,
+        "intersection requires at least two members"
+    );
+    let offset = std::mem::offset_of!(zend_type_list, types);
+    let size = offset + std::mem::size_of::<zend_type>() * class_names.len();
+    let list = unsafe { malloc(size) }.cast::<zend_type_list>();
+    if list.is_null() {
+        std::alloc::handle_alloc_error(
+            std::alloc::Layout::from_size_align(size, std::mem::align_of::<zend_type_list>())
+                .expect("valid zend_type_list layout"),
+        );
+    }
+    unsafe {
+        (*list).num_types = class_names
+            .len()
+            .try_into()
+            .expect("intersection member count");
+    }
+    let members = unsafe { std::ptr::addr_of_mut!((*list).types).cast::<zend_type>() };
+    for (index, name) in class_names.iter().enumerate() {
+        let string =
+            unsafe { phper_zend_string_init(name.as_ptr().cast(), name.len(), true.into()) };
+        unsafe {
+            members.add(index).write(zend_type {
+                ptr: string.cast(),
+                type_mask: _ZEND_TYPE_NAME_BIT,
+            });
+        }
+    }
+    zend_type {
+        ptr: list.cast(),
+        type_mask: _ZEND_TYPE_LIST_BIT | _ZEND_TYPE_INTERSECTION_BIT,
+    }
+}
+
 /// Used to find the handler in the invoke function.
 pub(crate) type HandlerMap = HashMap<(Option<CString>, CString), Rc<dyn Callable>>;
 
 unsafe extern "C" {
     fn zend_get_resource_handle(module_name: *const std::os::raw::c_char) -> std::os::raw::c_int;
+    fn malloc(size: usize) -> *mut std::ffi::c_void;
+}
+
+/// PHP 8.1/8.2 rebuild internal arginfo under the assumption that every
+/// complex type is a literal class-name string. Prebuilt intersection lists
+/// were only accepted from PHP 8.3 onward. Install the real runtime type after
+/// class registration, but before phper wires inheritance/implementation.
+pub(crate) unsafe fn install_intersection_types(
+    class_entry: *mut zend_class_entry, methods: &[MethodEntity],
+) {
+    if PHP_VERSION_ID >= 80300 {
+        return;
+    }
+
+    for method in methods {
+        let function = unsafe {
+            zend_hash_str_find_ptr_lc(
+                &mut (*class_entry).function_table,
+                method.name.as_ptr(),
+                method.name.as_bytes().len(),
+            )
+        } as *mut zend_function;
+        if function.is_null() {
+            continue;
+        }
+
+        let arg_info = unsafe { (*function).internal_function.arg_info };
+        if arg_info.is_null() {
+            continue;
+        }
+
+        if let Some(return_type) = &method.return_type
+            && let ReturnTypeHint::Intersection(class_names) = &return_type.type_hint
+        {
+            unsafe {
+                (*arg_info.offset(-1)).type_ = intersection_type(class_names);
+            }
+        }
+
+        for (index, argument) in method.arguments.iter().enumerate() {
+            if let Some(ArgumentTypeHint::Intersection(class_names)) = &argument.type_hint {
+                unsafe {
+                    (*arg_info.add(index)).type_ = intersection_type(class_names);
+                }
+            }
+        }
+    }
 }
 
 /// Index into `zend_internal_function.reserved` where phper stores a thin
@@ -54,7 +139,9 @@ static RESERVED_SLOT: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::
 fn reserved_slot() -> Option<usize> {
     *RESERVED_SLOT.get_or_init(|| unsafe {
         let slot = zend_get_resource_handle(c"phper".as_ptr());
-        usize::try_from(slot).ok().filter(|slot| *slot < ZEND_MAX_RESERVED_RESOURCES as usize)
+        usize::try_from(slot)
+            .ok()
+            .filter(|slot| *slot < ZEND_MAX_RESERVED_RESOURCES as usize)
     })
 }
 
@@ -62,7 +149,8 @@ fn reserved_slot() -> Option<usize> {
 /// reserved slot. Functions without a matching handler are left untouched and
 /// keep using the fallback name lookup.
 pub(crate) unsafe fn attach_handlers<'a>(
-    function_table: *mut HashTable, handlers: impl IntoIterator<Item = (&'a CStr, Rc<dyn Callable>)>,
+    function_table: *mut HashTable,
+    handlers: impl IntoIterator<Item = (&'a CStr, Rc<dyn Callable>)>,
 ) {
     let Some(slot) = reserved_slot() else {
         return;
@@ -133,7 +221,10 @@ where
     E: Throwable,
 {
     fn call(
-        &self, execute_data: &mut ExecuteData, arguments: &mut [ZVal], return_value: &mut ZVal,
+        &self,
+        execute_data: &mut ExecuteData,
+        arguments: &mut [ZVal],
+        return_value: &mut ZVal,
     ) {
         match (self.0)(execute_data, arguments) {
             Ok(z) => {
@@ -164,7 +255,10 @@ where
     E: Throwable,
 {
     fn call(
-        &self, execute_data: &mut ExecuteData, arguments: &mut [ZVal], return_value: &mut ZVal,
+        &self,
+        execute_data: &mut ExecuteData,
+        arguments: &mut [ZVal],
+        return_value: &mut ZVal,
     ) {
         let this = unsafe { execute_data.get_this_mut().unwrap().as_mut_state_obj() };
         match (self.0)(this, arguments) {
@@ -215,8 +309,11 @@ impl FunctionEntry {
 
     /// Will leak memory
     unsafe fn entry(
-        name: &CStr, arguments: &[Argument], return_type: Option<&ReturnType>,
-        handler: Option<Rc<dyn Callable>>, visibility: Option<RawVisibility>,
+        name: &CStr,
+        arguments: &[Argument],
+        return_type: Option<&ReturnType>,
+        handler: Option<Rc<dyn Callable>>,
+        visibility: Option<RawVisibility>,
     ) -> zend_function_entry {
         let mut infos = Vec::new();
 
@@ -273,8 +370,12 @@ impl FunctionEntry {
                         IS_NULL,
                         return_type.allow_null,
                     );
-                    info.type_.type_mask =
-                        MAY_BE_STATIC | if return_type.allow_null { MAY_BE_NULL } else { 0 };
+                    info.type_.type_mask = MAY_BE_STATIC
+                        | if return_type.allow_null {
+                            MAY_BE_NULL
+                        } else {
+                            0
+                        };
                     Some(info)
                 },
                 ReturnTypeHint::Union(members) => unsafe {
@@ -301,7 +402,11 @@ impl FunctionEntry {
                         ),
                     };
                     if class_member.is_none() {
-                        info.type_.type_mask = if return_type.allow_null { MAY_BE_NULL } else { 0 };
+                        info.type_.type_mask = if return_type.allow_null {
+                            MAY_BE_NULL
+                        } else {
+                            0
+                        };
                     }
                     for member in members {
                         if let Some(mask) = member.may_be_mask() {
@@ -310,6 +415,28 @@ impl FunctionEntry {
                     }
                     Some(info)
                 },
+                ReturnTypeHint::Intersection(class_names) => {
+                    if PHP_VERSION_ID < 80100 {
+                        None
+                    } else if PHP_VERSION_ID < 80300 {
+                        // PHP 8.1/8.2 cannot normalize a prebuilt type-list in
+                        // extension arginfo. It is replaced after registration.
+                        unsafe {
+                            Some(phper_zend_begin_arg_with_return_type_info_ex(
+                                return_type.ret_by_ref,
+                                require_arg_count,
+                                IS_OBJECT,
+                                false,
+                            ))
+                        }
+                    } else {
+                        let mut info = unsafe {
+                            phper_zend_begin_arg_info_ex(return_type.ret_by_ref, require_arg_count)
+                        };
+                        info.type_ = unsafe { intersection_type(class_names) };
+                        Some(info)
+                    }
+                }
                 hint => hint.zend_type_const().map(|type_const| unsafe {
                     let allow_null = match hint {
                         ReturnTypeHint::Mixed => true,
@@ -409,6 +536,27 @@ impl FunctionEntry {
                         }
                         Some(info)
                     },
+                    ArgumentTypeHint::Intersection(class_names) => {
+                        if PHP_VERSION_ID < 80100 {
+                            None
+                        } else if PHP_VERSION_ID < 80300 {
+                            unsafe {
+                                Some(phper_zend_arg_info_with_type(
+                                    arg.pass_by_ref,
+                                    arg.name.as_ptr(),
+                                    IS_OBJECT,
+                                    false,
+                                    default_value_ptr,
+                                ))
+                            }
+                        } else {
+                            let mut info =
+                                unsafe { phper_zend_arg_info(arg.pass_by_ref, arg.name.as_ptr()) };
+                            info.type_ = unsafe { intersection_type(class_names) };
+                            info.default_value = default_value_ptr;
+                            Some(info)
+                        }
+                    }
                     hint => hint.zend_type_const().map(|type_const| unsafe {
                         phper_zend_arg_info_with_type(
                             arg.pass_by_ref,
@@ -426,6 +574,10 @@ impl FunctionEntry {
             let mut arg_info = arg_info.unwrap_or_else(|| unsafe {
                 phper_zend_arg_info(arg.pass_by_ref, arg.name.as_ptr())
             });
+            // Untyped optional parameters need the default snippet too. Zend
+            // uses it for ReflectionParameter::getDefaultValue(), and named
+            // argument calls rely on the same arg-info metadata.
+            arg_info.default_value = default_value_ptr;
             if arg.variadic {
                 // zend_register_functions turns the variadic bit of the last
                 // arg_info into ZEND_ACC_VARIADIC on the function.
@@ -513,7 +665,9 @@ pub struct MethodEntity {
 impl MethodEntity {
     #[inline]
     pub(crate) fn new(
-        name: impl Into<String>, handler: Option<Rc<dyn Callable>>, visibility: Visibility,
+        name: impl Into<String>,
+        handler: Option<Rc<dyn Callable>>,
+        visibility: Visibility,
     ) -> Self {
         Self {
             name: ensure_end_with_zero(name),
@@ -787,7 +941,9 @@ impl ZFunc {
 
     #[allow(clippy::useless_conversion)]
     pub(crate) fn call(
-        &mut self, mut object: Option<&mut ZObj>, mut arguments: impl AsMut<[ZVal]>,
+        &mut self,
+        mut object: Option<&mut ZObj>,
+        mut arguments: impl AsMut<[ZVal]>,
     ) -> crate::Result<ZVal> {
         let arguments = arguments.as_mut();
         let function_handler = self.as_mut_ptr();
@@ -977,7 +1133,9 @@ pub fn call(callable: impl Into<ZVal>, arguments: impl AsMut<[ZVal]>) -> crate::
 }
 
 pub(crate) fn call_internal(
-    func: &mut ZVal, mut object: Option<&mut ZObj>, mut arguments: impl AsMut<[ZVal]>,
+    func: &mut ZVal,
+    mut object: Option<&mut ZObj>,
+    mut arguments: impl AsMut<[ZVal]>,
 ) -> crate::Result<ZVal> {
     let func_ptr = func.as_mut_ptr();
     let arguments = arguments.as_mut();

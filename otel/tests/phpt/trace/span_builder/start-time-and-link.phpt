@@ -41,7 +41,7 @@ array(1) {
       ["span_id"]=>
       string(16) "7480a670201f6340"
       ["trace_flags"]=>
-      string(2) "01"
+      string(2) "00"
       ["is_remote"]=>
       bool(false)
     }

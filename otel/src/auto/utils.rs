@@ -74,13 +74,20 @@ pub fn extract_span_name_from_sql(sql: &str) -> Option<String> {
 }
 
 pub fn record_exception(context: &opentelemetry::Context, exception: &mut ZObj) {
-    let attributes = crate::error::php_exception_to_attributes(exception);
+    let attributes = crate::util::limit_key_values(
+        crate::error::php_exception_to_auto_attributes(exception),
+        crate::util::AttributeDestination::Event,
+    );
     context.span().add_event("exception", attributes);
-    let message = exception.call("getMessage", [])
-        .ok()
-        .and_then(|zv| zv.as_z_str().and_then(|s| s.to_str().ok().map(|s| s.to_owned())))
-        .unwrap_or_default();
-    context.span().set_status(opentelemetry::trace::Status::error(message));
+    let description = if crate::config::sensitive_data::capture() {
+        exception.call("getMessage", [])
+            .ok()
+            .and_then(|zv| zv.as_z_str().and_then(|s| s.to_str().ok().map(|s| s.to_owned())))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    context.span().set_status(opentelemetry::trace::Status::error(description));
 }
 
 // Crate-private: callers are the observer/execute hooks, which hand over the
@@ -97,6 +104,10 @@ pub(crate) fn start_and_activate_span(
     };
     let mut merged_attributes = get_default_attributes(exec_data_ref);
     merged_attributes.extend(attributes);
+    let merged_attributes = crate::util::limit_key_values(
+        merged_attributes,
+        crate::util::AttributeDestination::Span,
+    );
     let span_builder = tracer.span_builder(span_name.to_string())
         .with_kind(span_kind)
         .with_attributes(merged_attributes);

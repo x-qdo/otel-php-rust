@@ -22,7 +22,7 @@ var_dump([
 ]);
 ?>
 --EXPECTF--
-object(OpenTelemetry\API\Trace\SpanContext)#1 (0) {
+object(OpenTelemetry\API\Trace\SpanContext)#%d (0) {
 }
 array(4) {
   ["trace_id"]=>

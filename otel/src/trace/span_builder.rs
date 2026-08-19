@@ -1,28 +1,41 @@
 use crate::{
-    context::storage,
-    trace::{non_recording_span::NonRecordingSpanClass, span::SpanClass},
+    context::{
+        context::{ContextClass, current_context_value},
+        context_key::{ContextKeyClass, ContextKeysClass},
+    },
+    trace::{
+        non_recording_span::NonRecordingSpanClass,
+        span::{SpanClass, otel_context_from_php},
+        span_builder_interface::SPAN_BUILDER_INTERFACE,
+        span_context::span_context_from_object,
+        span_context_interface::SPAN_CONTEXT_INTERFACE,
+        span_interface::SPAN_INTERFACE,
+    },
+    util::AttributeDestination,
 };
 use opentelemetry::{
     Context,
-    trace::{Link, SpanBuilder, SpanContext, SpanKind, Tracer},
+    trace::{Link, SpanBuilder, SpanKind, Tracer},
 };
 use opentelemetry_sdk::trace::SdkTracer;
 use phper::{
     alloc::ToRefOwned,
-    classes::{ClassEntity, StateClass, Visibility},
-    functions::Argument,
-    types::ArgumentTypeHint,
+    classes::{ClassEntity, Interface, StateClass, Visibility},
+    functions::{Argument, ReturnType},
+    types::{ArgumentTypeHint, ReturnTypeHint},
 };
-use std::{
-    convert::Infallible,
-    sync::Arc,
-    time::{Duration, UNIX_EPOCH},
-};
+use std::{convert::Infallible, time::{Duration, UNIX_EPOCH}};
 
 pub struct SpanBuilderState {
     span_builder: Option<SpanBuilder>,
     tracer: Option<SdkTracer>,
-    parent_context_id: u64,
+    parent: ParentContext,
+}
+
+enum ParentContext {
+    Current,
+    Root,
+    Explicit(Context),
 }
 // @see https://github.com/open-telemetry/opentelemetry-rust/issues/2742
 impl SpanBuilderState {
@@ -30,14 +43,14 @@ impl SpanBuilderState {
         Self {
             span_builder: Some(span_builder),
             tracer: Some(tracer),
-            parent_context_id: 0,
+            parent: ParentContext::Current,
         }
     }
     pub fn empty() -> Self {
         Self {
             span_builder: None,
             tracer: None,
-            parent_context_id: 0,
+            parent: ParentContext::Current,
         }
     }
 }
@@ -49,11 +62,16 @@ pub type SpanBuilderClass = StateClass<SpanBuilderState>;
 pub fn make_span_builder_class(
     span_class: SpanClass,
     non_recording_span_class: NonRecordingSpanClass,
+    context_class: ContextClass,
+    key_class: ContextKeyClass,
+    keys_class: ContextKeysClass,
+    interface: Interface,
 ) -> ClassEntity<SpanBuilderState> {
     let mut class = ClassEntity::<SpanBuilderState>::new_with_state_constructor(
         SPAN_BUILDER_CLASS_NAME,
         || SpanBuilderState::empty(),
     );
+    class.implements(interface);
 
     class.add_method("__construct", Visibility::Private, |_, _| {
         Ok::<_, Infallible>(())
@@ -61,8 +79,15 @@ pub fn make_span_builder_class(
 
     class
         .add_method("setAttribute", Visibility::Public, |this, arguments| {
-            let name = crate::util::attribute_key(crate::util::arg(arguments, 0)?.expect_z_str()?.to_str()?);
-            let Some(attribute) = crate::util::zval_to_key_value(name, crate::util::arg(arguments, 1)?) else {
+            let name = crate::util::attribute_key(
+                crate::util::arg(arguments, 0)?.expect_z_str()?.to_str()?,
+            );
+            let Some(attribute) = crate::util::zval_to_key_value(
+                AttributeDestination::Span,
+                name,
+                crate::util::arg(arguments, 1)?,
+            )
+            else {
                 return Ok::<_, phper::Error>(this.to_ref_owned());
             };
             let Some(span_builder) = this.as_mut_state().span_builder.as_mut() else {
@@ -75,12 +100,21 @@ pub fn make_span_builder_class(
 
             Ok::<_, phper::Error>(this.to_ref_owned())
         })
-        .argument(Argument::new("key"))
-        .argument(Argument::new("value").optional());
+        .argument(Argument::new("key").with_type_hint(ArgumentTypeHint::String))
+        .argument(Argument::new("value").with_type_hint(ArgumentTypeHint::Mixed))
+        .return_type(ReturnType::new(ReturnTypeHint::ClassEntry(
+            SPAN_BUILDER_INTERFACE.to_string(),
+        )));
 
     class
         .add_method("setAttributes", Visibility::Public, |this, arguments| {
-            let attributes = crate::util::zval_arr_to_key_value_vec(crate::util::arg(arguments, 0)?.expect_z_arr()?);
+            let attributes = crate::util::zval_iterable_to_array(
+                crate::util::arg(arguments, 0)?,
+            )?;
+            let attributes = crate::util::zval_arr_to_key_value_vec(
+                attributes.expect_z_arr()?,
+                AttributeDestination::Span,
+            );
             let Some(span_builder) = this.as_mut_state().span_builder.as_mut() else {
                 return Ok::<_, phper::Error>(this.to_ref_owned());
             };
@@ -91,7 +125,10 @@ pub fn make_span_builder_class(
 
             Ok::<_, phper::Error>(this.to_ref_owned())
         })
-        .argument(Argument::new("attributes"));
+        .argument(Argument::new("attributes").with_type_hint(ArgumentTypeHint::Iterable))
+        .return_type(ReturnType::new(ReturnTypeHint::ClassEntry(
+            SPAN_BUILDER_INTERFACE.to_string(),
+        )));
 
     class
         .add_method(
@@ -112,24 +149,26 @@ pub fn make_span_builder_class(
                 Ok::<_, phper::Error>(this.to_ref_owned())
             },
         )
-        .argument(Argument::new("timestampNanos").with_type_hint(ArgumentTypeHint::Int));
+        .argument(Argument::new("timestampNanos").with_type_hint(ArgumentTypeHint::Int))
+        .return_type(ReturnType::new(ReturnTypeHint::ClassEntry(
+            SPAN_BUILDER_INTERFACE.to_string(),
+        )));
 
     class
         .add_method("addLink", Visibility::Public, |this, arguments| {
             let span_context = {
                 let span_context_obj = crate::util::arg_mut(arguments, 0)?.expect_mut_z_obj()?;
-                let state_obj = unsafe { span_context_obj.as_state_obj::<Option<SpanContext>>() };
-                let Some(span_context) = state_obj.as_state().as_ref() else {
-                    tracing::warn!("SpanBuilder::addLink ignored an invalid SpanContext");
-                    return Ok::<_, phper::Error>(this.to_ref_owned());
-                };
-                span_context.clone()
+                span_context_from_object(span_context_obj)?
             };
-            let attributes = arguments
-                .get(1)
-                .and_then(|argument| argument.as_z_arr())
-                .map(crate::util::zval_arr_to_key_value_vec)
-                .unwrap_or_default();
+            let attributes = if let Some(attributes) = arguments.get(1) {
+                let attributes = crate::util::zval_iterable_to_array(attributes)?;
+                crate::util::zval_arr_to_key_value_vec(
+                    attributes.expect_z_arr()?,
+                    AttributeDestination::Link,
+                )
+            } else {
+                Vec::new()
+            };
             let Some(span_builder) = this.as_mut_state().span_builder.as_mut() else {
                 return Ok::<_, phper::Error>(this.to_ref_owned());
             };
@@ -140,35 +179,60 @@ pub fn make_span_builder_class(
 
             Ok::<_, phper::Error>(this.to_ref_owned())
         })
-        .argument(Argument::new("context"))
-        .argument(Argument::new("attributes").optional());
+        .argument(
+            Argument::new("context").with_type_hint(ArgumentTypeHint::ClassEntry(
+                SPAN_CONTEXT_INTERFACE.to_string(),
+            )),
+        )
+        .argument(
+            Argument::new("attributes")
+                .with_type_hint(ArgumentTypeHint::Iterable)
+                .with_default_value("[]"),
+        )
+        .return_type(ReturnType::new(ReturnTypeHint::ClassEntry(
+            SPAN_BUILDER_INTERFACE.to_string(),
+        )));
 
+    let parent_key_class = key_class.clone();
+    let parent_keys_class = keys_class.clone();
     class
-        .add_method("setParent", Visibility::Public, |this, arguments| {
+        .add_method("setParent", Visibility::Public, move |this, arguments| {
             let state = this.as_mut_state();
-
-            let context_obj = crate::util::arg_mut(arguments, 0)?.expect_mut_z_obj()?;
-            let context_id = context_obj
-                .get_property("context_id")
-                .as_long()
-                .unwrap_or(0);
-            state.parent_context_id = context_id as u64;
+            let context = crate::util::arg_mut(arguments, 0)?;
+            state.parent = if context.get_type_info().is_false() {
+                ParentContext::Root
+            } else if context.get_type_info().is_null() {
+                ParentContext::Current
+            } else {
+                ParentContext::Explicit(otel_context_from_php(
+                    context.expect_mut_z_obj()?,
+                    &parent_key_class,
+                    &parent_keys_class,
+                )?)
+            };
 
             Ok::<_, phper::Error>(this.to_ref_owned())
         })
         .argument(
-            Argument::new("context").with_type_hint(ArgumentTypeHint::ClassEntry(String::from(
-                r"OpenTelemetry\Context\ContextInterface",
-            ))),
-        );
+            Argument::new("context").with_type_hint(ArgumentTypeHint::Union(vec![
+                ArgumentTypeHint::ClassEntry(
+                    r"OpenTelemetry\Context\ContextInterface".to_string(),
+                ),
+                ArgumentTypeHint::False,
+                ArgumentTypeHint::Null,
+            ])),
+        )
+        .return_type(ReturnType::new(ReturnTypeHint::ClassEntry(
+            SPAN_BUILDER_INTERFACE.to_string(),
+        )));
 
     class
         .add_method("setSpanKind", Visibility::Public, |this, arguments| {
             let span_kind_int = crate::util::arg(arguments, 0)?.expect_long()?;
             let span_kind = match span_kind_int {
                 0 => SpanKind::Internal,
-                1 => SpanKind::Server,
-                2 => SpanKind::Client,
+                1 => SpanKind::Client,
+                2 => SpanKind::Server,
                 3 => SpanKind::Producer,
                 4 => SpanKind::Consumer,
                 _ => {
@@ -183,7 +247,10 @@ pub fn make_span_builder_class(
 
             Ok::<_, phper::Error>(this.to_ref_owned())
         })
-        .argument(Argument::new("spanKind").with_type_hint(ArgumentTypeHint::Int));
+        .argument(Argument::new("spanKind").with_type_hint(ArgumentTypeHint::Int))
+        .return_type(ReturnType::new(ReturnTypeHint::ClassEntry(
+            SPAN_BUILDER_INTERFACE.to_string(),
+        )));
 
     class.add_method("startSpan", Visibility::Public, move |this, _| {
         let state = this.as_state();
@@ -192,36 +259,31 @@ pub fn make_span_builder_class(
         else {
             // No-op provider: no span context is generated, mirroring the
             // official SDK's disabled behaviour.
-            return Ok::<_, phper::Error>(non_recording_span_class.init_object()?);
+            return Ok::<_, phper::Error>(phper::values::ZVal::from(
+                non_recording_span_class.init_object()?,
+            ));
         };
-        let parent_context = if state.parent_context_id > 0 {
-            storage::get_context_instance(Some(state.parent_context_id))
-                .map(|ctx| {
-                    tracing::debug!(
-                        "SpanBuilder::Using parent context {} (ref count = {})",
-                        state.parent_context_id,
-                        Arc::strong_count(&ctx)
-                    );
-                    (*ctx).clone()
-                })
-                .unwrap_or_else(|| {
-                    tracing::warn!(
-                        "SpanBuilder::Parent context {} not found, falling back to current()",
-                        state.parent_context_id
-                    );
-                    Context::current()
-                })
-        } else {
-            tracing::debug!("SpanBuilder::No parent context, using Context::current()");
-            Context::current()
+        let parent_context = match &state.parent {
+            ParentContext::Current => {
+                let mut context = current_context_value(&context_class)?;
+                otel_context_from_php(
+                    context.expect_mut_z_obj()?,
+                    &key_class,
+                    &keys_class,
+                )?
+            }
+            ParentContext::Root => Context::new(),
+            ParentContext::Explicit(context) => context.clone(),
         };
 
         let span = tracer.build_with_context(span_builder.clone(), &parent_context);
         tracing::debug!("SpanBuilder::Starting span");
         let mut object = span_class.init_object()?;
         *object.as_mut_state() = Some(span);
-        Ok::<_, phper::Error>(object)
-    });
+        Ok::<_, phper::Error>(phper::values::ZVal::from(object))
+    }).return_type(ReturnType::new(ReturnTypeHint::ClassEntry(
+        SPAN_INTERFACE.to_string(),
+    )));
 
     class
 }

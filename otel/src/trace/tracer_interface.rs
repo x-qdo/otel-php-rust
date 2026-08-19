@@ -1,7 +1,7 @@
 use phper::{
-    classes::{InterfaceEntity},
-    functions::{Argument},
-    types::{ArgumentTypeHint},
+    classes::InterfaceEntity,
+    functions::{Argument, ReturnType},
+    types::{ArgumentTypeHint, ReturnTypeHint},
 };
 
 pub fn make_tracer_interface() -> InterfaceEntity {
@@ -9,10 +9,12 @@ pub fn make_tracer_interface() -> InterfaceEntity {
     interface
         .add_method("spanBuilder")
         .argument(Argument::new("spanName").with_type_hint(ArgumentTypeHint::String))
-        //.return_type(ReturnType::new(ReturnTypeHint::ClassEntry(String::from(r"OpenTelemetry\API\Trace\SpanBuilderInterface"))))
-    ;
+        .return_type(ReturnType::new(ReturnTypeHint::ClassEntry(String::from(
+            r"OpenTelemetry\API\Trace\SpanBuilderInterface",
+        ))));
+    interface
+        .add_method("isEnabled")
+        .return_type(ReturnType::new(ReturnTypeHint::Bool));
 
     interface
 }
-
-//public function spanBuilder(string $spanName): SpanBuilderInterface;
