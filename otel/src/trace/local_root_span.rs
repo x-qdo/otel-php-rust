@@ -1,6 +1,6 @@
 use crate::{
     context::{
-        context_class::{ContextClass, get_instance_id},
+        context_class::{ContextClass, get_instance_id, native_context_from_object},
         context_key::{ContextKeyClass, ContextKeysClass, get_or_create_context_key},
         native_context::NativeContext,
         storage,
@@ -12,6 +12,7 @@ use crate::{
         span_interface::SPAN_INTERFACE,
     },
 };
+use opentelemetry::trace::TraceContextExt;
 use phper::{
     classes::{ClassEntity, Visibility},
     functions::{Argument, ReturnType},
@@ -57,12 +58,16 @@ fn from_context(
     if span.as_z_obj().is_some() {
         return Ok(span);
     }
-    let context_id = get_instance_id(context);
-    if let (Some(context_id), Some(local_root_id)) =
-        (context_id, get_local_root_span_instance_id())
-        && context_id == local_root_id
-    {
-        return context_bound_span(span_class, context_id);
+    if let Some(local_root_id) = get_local_root_span_instance_id() {
+        let is_local_root = get_instance_id(context) == Some(local_root_id)
+            || native_context_from_object(context).is_some_and(|current| {
+                storage::get_context_instance(Some(local_root_id)).is_some_and(|local_root| {
+                    current.span().span_context() == local_root.span().span_context()
+                })
+            });
+        if is_local_root {
+            return context_bound_span(span_class, local_root_id);
+        }
     }
     invalid_span(non_recording_class)
 }
