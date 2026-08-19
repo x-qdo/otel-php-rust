@@ -37,9 +37,9 @@ clean:
 	cargo clean
 	rm -rf configure* config.h* libtool Makefile.* run-tests.php build/ autom4te.cache/
 	rm -rf acinclude.m4 config.log config.guess config.nice config.status config.sub install-sh ltmain.sh missing mkinstalldirs
-	rm -rf tests/auto/laminas/vendor/* tests/auto/laminas/composer.lock
-	rm -rf tests/auto/zf1/vendor/* tests/auto/zf1/composer.lock
-	rm -rf tests/auto/psr18/vendor/* tests/auto/psr18/composer.lock
+	rm -rf tests/auto/laminas/vendor/*
+	rm -rf tests/auto/zf1/vendor/*
+	rm -rf tests/auto/psr18/vendor/*
 update:
 	@echo "Updating composer dependencies..."
 	(cd tests/auto/laminas && composer update --no-dev)

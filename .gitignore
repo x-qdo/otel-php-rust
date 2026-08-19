@@ -6,6 +6,9 @@ __pycache__/
 vendor/
 otel/demo/
 composer.lock
+!otel/tests/auto/laminas/composer.lock
+!otel/tests/auto/psr18/composer.lock
+!otel/tests/auto/zf1/composer.lock
 !otel/tests/integration/opentelemetry-php/composer.lock
 /.env
 otel/Makefile.global

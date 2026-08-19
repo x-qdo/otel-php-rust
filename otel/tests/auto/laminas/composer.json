@@ -11,9 +11,9 @@
     ],
     "require": {
         "php": "^7 || ^8",
-        "laminas/laminas-mvc": "*",
-        "laminas/laminas-modulemanager": "*",
-        "laminas/laminas-db": "*"
+        "laminas/laminas-db": "^2.22",
+        "laminas/laminas-modulemanager": "^2.19",
+        "laminas/laminas-mvc": "^3.8"
     },
     "autoload": {
         "psr-4": {
