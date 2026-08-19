@@ -57,7 +57,7 @@ jobs:
         working-directory: otel
         run: cargo test --features test
 
-      - name: Install auto-instrumentation fixtures
+      - name: Install PHP fixtures
         working-directory: otel
         env:
           PHP_VERSION: ${{ matrix.php-version }}
@@ -72,6 +72,7 @@ jobs:
           fi
           (cd tests/auto/laminas && composer install "${laminas_flags[@]}")
           (cd tests/auto/psr18 && composer install "${composer_flags[@]}")
+          (cd tests/reflection && composer install "${composer_flags[@]}")
 
       - name: phpt, HTTP and auto-instrumentation suites
         working-directory: otel
