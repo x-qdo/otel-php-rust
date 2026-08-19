@@ -30,7 +30,7 @@ phper = { path = "third_party/phper" }
 opentelemetry = { version = "0.31.0", features = ["internal-logs"] }
 opentelemetry-http = "0.31.0"
 opentelemetry-stdout = "0.31.0"
-opentelemetry_sdk = { version = "0.31.0", features = ["testing"] }
+opentelemetry_sdk = { version = "0.32.1", features = ["testing"] }
 opentelemetry-otlp = { version = "0.31.0", features = ["grpc-tonic", "gzip-http", "gzip-tonic", "tls-webpki-roots"] }
 opentelemetry-proto = { version = "0.31.0", default-features = false, features = ["gen-tonic-messages", "trace"] }
 prost = "0.14"
