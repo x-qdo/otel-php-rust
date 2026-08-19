@@ -33,6 +33,7 @@ jobs:
         with:
           components: clippy, rustfmt
           cache-workspaces: otel
+          cache-key: php-${{ matrix.php-version }}
 
       - name: Set up PHP
         uses: shivammathur/setup-php@v2
@@ -46,6 +47,7 @@ jobs:
           echo "TEST_PHP_EXECUTABLE=$(which php)" >> "$GITHUB_ENV"
           make build-test
           sudo cp target/debug/libotel.so "$(php-config --extension-dir)/otel.so"
+          php -n -d extension=otel.so --ri otel >/dev/null
 
       - name: Panic-site lint gate
         working-directory: otel
@@ -57,10 +59,19 @@ jobs:
 
       - name: Install auto-instrumentation fixtures
         working-directory: otel
+        env:
+          PHP_VERSION: ${{ matrix.php-version }}
         run: |
-          (cd tests/auto/zf1 && composer update --no-dev --no-interaction --no-progress)
-          (cd tests/auto/laminas && composer update --no-dev --no-interaction --no-progress)
-          (cd tests/auto/psr18 && composer update --no-dev --no-interaction --no-progress)
+          composer_flags=(--no-dev --no-interaction --no-progress)
+          (cd tests/auto/zf1 && composer install "${composer_flags[@]}")
+          laminas_flags=("${composer_flags[@]}")
+          if [[ "$PHP_VERSION" == "8.5" ]]; then
+            # Laminas MVC 3.8 declares support through PHP 8.4. Exercise it on
+            # 8.5 while ignoring only that upper bound, not other requirements.
+            laminas_flags+=(--ignore-platform-req=php+)
+          fi
+          (cd tests/auto/laminas && composer install "${laminas_flags[@]}")
+          (cd tests/auto/psr18 && composer install "${composer_flags[@]}")
 
       - name: phpt, HTTP and auto-instrumentation suites
         working-directory: otel
@@ -100,10 +111,10 @@ jobs:
 
       - name: Build release extension
         run: |
-          mkdir -p otel/.cargo/registry otel/.cargo/git otel/modules otel/target
+          mkdir -p otel/.cargo/registry otel/.cargo/git otel/modules otel/target otel/tests/reflection/vendor
           # Dockerfile runs the build as php-rust (UID/GID 1000), while GitHub's
           # checkout belongs to the runner user. Only generated paths need write access.
-          sudo chown -R 1000:1000 otel/.cargo otel/modules otel/target
+          sudo chown -R 1000:1000 otel/.cargo otel/modules otel/target otel/tests/reflection/vendor
           docker compose run --rm php make build
 
       - name: Verification matrix
