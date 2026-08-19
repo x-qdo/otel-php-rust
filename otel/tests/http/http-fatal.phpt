@@ -2,6 +2,8 @@
 Test HTTP span with fatal error
 --EXTENSIONS--
 otel
+--ENV--
+OTEL_PHP_CAPTURE_SENSITIVE_DATA=true
 --FILE--
 <?php
 include dirname(__DIR__) . '/run-server.php';
