@@ -31,12 +31,18 @@ are available in a released upstream crate.
   / `set_abstract` (class `ce_flags`), `MethodEntity::set_final`,
   `ArgumentTypeHint::Union` / `ReturnTypeHint::Union` (one class member plus
   scalar `MAY_BE_*` members, e.g. `Severity|int`, `float|int`),
-  `ReturnTypeHint::Static`, `ArgumentTypeHint::False` for `T|false|null`
-  unions, `Argument::variadic()` (`callable ...$callbacks`), and the
-  default-value snippet is kept on
-  class-typed parameters (the C helper `phper_zend_arg_obj_info` drops it, so
-  `?ContextInterface $context = null` was reported by Reflection as optional
-  without a default and could not be skipped by named arguments).
+  `ArgumentTypeHint::Intersection` / `ReturnTypeHint::Intersection` for PHP
+  8.1+, `ReturnTypeHint::Static`, `ArgumentTypeHint::False` for
+  `T|false|null` unions, and `Argument::variadic()`
+  (`callable ...$callbacks`). PHP 8.1/8.2 cannot normalize a prebuilt
+  intersection type list in extension arginfo, so those types are installed
+  immediately after class/interface registration; PHP 8.3+ consumes the
+  persistent type list directly. Default-value snippets are retained for both
+  class-typed and untyped optional parameters (the Zend/phper helpers otherwise
+  drop them), so Reflection reports the real default and named arguments can
+  skip parameters correctly. Internal enums are marked final and are
+  registered before classes/interfaces, allowing enum types to be resolved
+  while Zend checks implemented method signatures.
 
 - Panic containment at the FFI boundary. Rust aborts the process when a
   panic unwinds out of an `extern "C"` function, so upstream turns any panic
@@ -58,7 +64,13 @@ are available in a released upstream crate.
   Logging of the panic is left to the process panic hook (the extension
   installs a rate-limited one). `Module::name()` is exposed for the message.
 
+The local source delta from `phper-v0.17.5` is confined to seven files:
+`src/classes.rs`, `src/enums.rs`, `src/errors.rs`, `src/functions.rs`,
+`src/modules.rs`, `src/objects.rs`, and `src/types.rs`. Formatting-only hunks
+may appear in the same files, but no other vendored source file is patched.
+
 To re-vendor: extract `phper/` from the upstream tag, restore the concrete
-`Cargo.toml` values and file copies above, and reapply the five changes
-(`src/classes.rs`, `src/errors.rs`, `src/functions.rs`, `src/modules.rs`,
-`src/objects.rs`, `src/types.rs`).
+`Cargo.toml` values and file copies above, and reapply the five change groups
+described here to those seven source files. Diff the result against upstream
+commit `904ba7f94f97207fc33457c6088a5a8af425697d` before updating this document
+or the pinned dependency.

@@ -47,8 +47,8 @@ wildcards = "allow"
 highlight = "all"
 deny = [
     # TLS must stay pure Rust: the musl release image ships no OpenSSL.
-    { crate = "openssl-sys", reason = "TLS is rustls-only; the musl release image ships no OpenSSL" },
-    { crate = "native-tls", reason = "TLS is rustls-only; the musl release image ships no OpenSSL" },
+    { crate = "openssl-sys", reason = "TLS is rustls-only; see docs/PRODUCTION_READINESS.md" },
+    { crate = "native-tls", reason = "TLS is rustls-only; see docs/PRODUCTION_READINESS.md" },
 ]
 
 [sources]

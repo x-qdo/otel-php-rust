@@ -1,7 +1,8 @@
 name: CI
 
-# Every job is mandatory: no continue-on-error and no optional matrix entries.
-# The PHP matrix covers the fork's supported versions at this point in history.
+# Every job is mandatory: no continue-on-error and no optional matrix entries. The
+# behavioural and release-artifact matrices cover every upstream-supported
+# stable PHP 8 minor on musl and glibc. EOL minors are intentionally excluded.
 
 on:
   push:
@@ -23,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        php-version: ['8.2', '8.3']
+        php-version: ['8.2', '8.3', '8.4', '8.5']
     steps:
       - uses: actions/checkout@v4
 
@@ -106,17 +107,26 @@ jobs:
         run: make integration
 
   release-artifacts:
-    name: Reproducible artifacts (${{ matrix.platform }})
+    name: PHP ${{ matrix.php-version }} ${{ matrix.libc.name }} ${{ matrix.platform.arch }} artifact
     runs-on: ubuntu-latest
     needs: [unit, supply-chain]
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: linux/arm64
+        php-version: ['8.2', '8.3', '8.4', '8.5']
+        platform:
+          - docker: linux/arm64
             arch: aarch64
-          - platform: linux/amd64
+          - docker: linux/amd64
             arch: x86_64
+        libc:
+          - name: musl
+            dockerfile: Dockerfile.alpine
+            runtime-suffix: fpm-alpine3.23
+          - name: glibc
+            dockerfile: Dockerfile.glibc
+            runtime-suffix: fpm-bookworm
     permissions:
       contents: read
       id-token: write
@@ -126,45 +136,67 @@ jobs:
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
-      - name: Build otel.so (PHP 8.2, Alpine 3.18, ${{ matrix.arch }}-musl, dynamic musl)
+      - name: Build PHP ${{ matrix.php-version }} ${{ matrix.platform.arch }}-${{ matrix.libc.name }} otel.so
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.alpine
+          file: ${{ matrix.libc.dockerfile }}
           target: artifact
-          platforms: ${{ matrix.platform }}
+          platforms: ${{ matrix.platform.docker }}
           build-args: |
-            PHP_VERSION=8.2
-            ALPINE_VERSION=3.18
+            PHP_VERSION=${{ matrix.php-version }}
             RUST_VERSION=1.97.1
-          outputs: type=local,dest=dist/${{ matrix.arch }}
-          cache-from: type=gha,scope=alpine-${{ matrix.arch }}
-          cache-to: type=gha,scope=alpine-${{ matrix.arch }},mode=max
+          outputs: type=local,dest=dist/php${{ matrix.php-version }}-${{ matrix.platform.arch }}-${{ matrix.libc.name }}
+          cache-from: type=gha,scope=artifact-php${{ matrix.php-version }}-${{ matrix.platform.arch }}-${{ matrix.libc.name }}
+          cache-to: type=gha,scope=artifact-php${{ matrix.php-version }}-${{ matrix.platform.arch }}-${{ matrix.libc.name }},mode=max
 
       - name: Load the extension in the target image and record ABI metadata
         run: |
           set -euo pipefail
-          so="otel-php8.2-${{ matrix.arch }}-linux-musl.so"
-          mv "dist/${{ matrix.arch }}/otel.so" "dist/${{ matrix.arch }}/${so}"
-          docker run --rm --platform ${{ matrix.platform }} \
-            -v "$PWD/dist/${{ matrix.arch }}/${so}:/otel.so:ro" \
+          out="dist/php${{ matrix.php-version }}-${{ matrix.platform.arch }}-${{ matrix.libc.name }}"
+          stem="otel-php${{ matrix.php-version }}-${{ matrix.platform.arch }}-linux-${{ matrix.libc.name }}"
+          so="${out}/${stem}.so"
+          abi="${out}/${stem}.abi.json"
+          runtime_image="php:${{ matrix.php-version }}-${{ matrix.libc.runtime-suffix }}"
+          mv "${out}/otel.so" "${so}"
+          docker pull --platform ${{ matrix.platform.docker }} "${runtime_image}"
+          runtime_digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "${runtime_image}")"
+          docker run --rm --platform ${{ matrix.platform.docker }} \
+            -e OTEL_ARTIFACT_LIBC=${{ matrix.libc.name }} \
+            -e OTEL_ARTIFACT_RUNTIME_IMAGE="${runtime_image}" \
+            -e OTEL_ARTIFACT_RUNTIME_IMAGE_DIGEST="${runtime_digest}" \
+            -v "$PWD/${so}:/otel.so:ro" \
             -v "$PWD/otel/tests/integration/abi_metadata.php:/abi_metadata.php:ro" \
-            php:8.2-fpm-alpine3.18 sh -ec '
-              apk add --no-cache libgcc >/dev/null
+            "${runtime_image}" sh -ec '
+              if [ "${OTEL_ARTIFACT_LIBC}" = musl ]; then
+                apk add --no-cache libgcc >/dev/null
+              fi
+              export OTEL_ARTIFACT_LIBC_VERSION="$(ldd --version 2>&1 | head -n 1 || true)"
               php -n -d extension=/otel.so /abi_metadata.php' \
-            > "dist/${{ matrix.arch }}/abi.json"
-          cat "dist/${{ matrix.arch }}/abi.json"
-          (cd "dist/${{ matrix.arch }}" && sha256sum "${so}" abi.json > SHA256SUMS && cat SHA256SUMS)
+            > "${abi}"
+          jq -e \
+            --arg php "${{ matrix.php-version }}" \
+            --arg arch "${{ matrix.platform.arch }}" \
+            --arg libc "${{ matrix.libc.name }}" \
+            '.php_version | startswith($php + ".")' "${abi}" >/dev/null
+          jq -e \
+            --arg arch "${{ matrix.platform.arch }}" \
+            --arg libc "${{ matrix.libc.name }}" \
+            --arg runtime "${runtime_image}" \
+            '.arch == $arch and .libc == $libc and .linkage == "dynamic" and .thread_safe == false and .debug_build == false and .runtime_image == $runtime and (.runtime_image_digest | contains("@sha256:"))' \
+            "${abi}" >/dev/null
+          cat "${abi}"
+          (cd "${out}" && sha256sum "${stem}.so" "${stem}.abi.json" > SHA256SUMS && cat SHA256SUMS)
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: dist/${{ matrix.arch }}/*.so
+          subject-path: dist/php${{ matrix.php-version }}-${{ matrix.platform.arch }}-${{ matrix.libc.name }}/*.so
 
       - uses: actions/upload-artifact@v4
         with:
-          name: otel-php8.2-${{ matrix.arch }}-linux-musl
-          path: dist/${{ matrix.arch }}
+          name: otel-php${{ matrix.php-version }}-${{ matrix.platform.arch }}-linux-${{ matrix.libc.name }}
+          path: dist/php${{ matrix.php-version }}-${{ matrix.platform.arch }}-${{ matrix.libc.name }}
           if-no-files-found: error
 
   release-metadata:
@@ -220,6 +252,6 @@ jobs:
           files: |
             dist/SHA256SUMS
             dist/**/*.so
-            dist/**/abi.json
+            dist/**/*.abi.json
             dist/release-metadata/*
           generate_release_notes: true

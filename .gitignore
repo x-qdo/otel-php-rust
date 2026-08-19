@@ -1,6 +1,8 @@
 .idea
 .vscode
 .cargo
+__pycache__/
+*.py[cod]
 vendor/
 otel/demo/
 composer.lock

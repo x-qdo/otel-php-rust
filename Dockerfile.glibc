@@ -1,19 +1,20 @@
 ARG PHP_VERSION=8.2
-# Shared compatibility baseline for every upstream-supported PHP 8 minor.
-# Production image tests may pass a different explicit version.
-ARG ALPINE_VERSION=3.23
 
-FROM php:${PHP_VERSION}-fpm-alpine${ALPINE_VERSION} AS builder
+# Bookworm is the shared glibc baseline published for every supported PHP 8
+# minor. Pinning it avoids silently raising the required glibc with `fpm`.
+FROM php:${PHP_VERSION}-fpm-bookworm AS builder
 
 ARG RUST_VERSION=1.97.1
-ENV PATH="/root/.cargo/bin:${PATH}"
-ENV RUSTFLAGS="-C target-feature=-crt-static"
+ENV DEBIAN_FRONTEND=noninteractive \
+    PATH="/root/.cargo/bin:${PATH}"
 
-RUN apk add --no-cache \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
         $PHPIZE_DEPS \
         ca-certificates \
-        clang-dev \
         curl \
+        libclang-dev \
+    && rm -rf /var/lib/apt/lists/* \
     && curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
         https://sh.rustup.rs \
         | sh -s -- -y --profile minimal --default-toolchain "${RUST_VERSION}"
@@ -31,12 +32,11 @@ RUN cargo build --release --locked $( [ "${ALLOCATOR}" = mimalloc ] && printf --
 FROM scratch AS artifact
 COPY --from=builder /tmp/otel.so /otel.so
 
-FROM php:${PHP_VERSION}-fpm-alpine${ALPINE_VERSION}
+FROM php:${PHP_VERSION}-fpm-bookworm
 
 COPY --from=builder /tmp/otel.so /usr/local/lib/php/extensions/otel.so
 
-RUN apk add --no-cache libgcc \
-    && php -n -d extension=/usr/local/lib/php/extensions/otel.so --ri otel
+RUN php -n -d extension=/usr/local/lib/php/extensions/otel.so --ri otel
 
 ENTRYPOINT ["php"]
 CMD ["-n", "-d", "extension=/usr/local/lib/php/extensions/otel.so", "--ri", "otel"]
