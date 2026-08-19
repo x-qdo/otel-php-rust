@@ -19,7 +19,7 @@ Globals::tracerProvider()->getTracer('my_tracer')->spanBuilder('root')->startSpa
 ?>
 --EXPECTF--
 %A
-[%s] [DEBUG] [pid=%d] [ThreadId(%d)] otel::trace::tracer_provider: event src/trace/tracer_provider.rs:%d message=creating tracer provider for key (%d, "from-dotenv:service.namespace=my-dotenv-service,service.version=0.1.0")
+[%s] [DEBUG] [pid=%d] [ThreadId(%d)] otel::trace::tracer_provider: event src/trace/tracer_provider.rs:%d message=creating tracer provider for pid %d
 %A
 Spans
 Resource%A

@@ -36,12 +36,14 @@ pub fn make_tracer_class(
 
     class
         .add_method("spanBuilder", Visibility::Public, move |this, arguments| {
-            let tracer: &SdkTracer = this.as_state().as_ref().unwrap();
-            let name = arguments[0].expect_z_str()?.to_str()?.to_string();
-            let span_builder: SpanBuilder = tracer.span_builder(name);
-            let my_span_builder = SpanBuilderState::new(span_builder, tracer.clone());
+            let name = arguments[0].expect_z_str()?.to_str()?;
             let mut object = span_builder_class.init_object()?;
-            *object.as_mut_state() = my_span_builder;
+            // A tracer from the no-op provider keeps the builder stateless so
+            // the disabled path never copies names or touches the SDK.
+            if let Some(tracer) = this.as_state().as_ref() {
+                let span_builder: SpanBuilder = tracer.span_builder(name.to_string());
+                *object.as_mut_state() = SpanBuilderState::new(span_builder, tracer.clone());
+            }
             Ok::<_, phper::Error>(object)
         })
         .argument(Argument::new("spanName").with_type_hint(ArgumentTypeHint::String));

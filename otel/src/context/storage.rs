@@ -1,7 +1,9 @@
 use crate::context::{
     context::ContextClassEntity,
     scope::ScopeClassEntity,
+    scope_interface::{DETACHED, INACTIVE, MISMATCH},
 };
+use opentelemetry::{Context, ContextGuard, trace::TraceContextExt};
 use phper::{
     classes::{ClassEntity, Interface, StateClass, Visibility},
     functions::{Argument, ReturnType},
@@ -18,10 +20,6 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
 };
-use opentelemetry::{
-    Context,
-    ContextGuard,
-};
 use tracing::debug;
 
 const CONTEXT_STORAGE_CLASS_NAME: &str = r"OpenTelemetry\Context\Storage";
@@ -32,6 +30,7 @@ pub type StorageClassEntity = ClassEntity<()>;
 // context created and stored as a class property.
 thread_local! {
     static CONTEXT_STORAGE: RefCell<HashMap<u64, Arc<Context>>> = RefCell::new(HashMap::new());
+    static DETACHED_SPAN_STORAGE: RefCell<HashMap<u64, Arc<Context>>> = RefCell::new(HashMap::new());
     static GUARD_STACK: RefCell<Vec<(ContextGuard, u64)>> = RefCell::new(Vec::new());
     static CONTEXT_GUARD_MAP: RefCell<HashMap<usize, ContextGuard>> = RefCell::new(HashMap::new()); //for observer use
 }
@@ -45,7 +44,7 @@ pub fn current_context() -> Arc<Context> {
 
 pub fn resolve_context(instance_id: Option<u64>) -> Arc<Context> {
     match instance_id {
-        Some(id) => get_context_instance(Some(id)).expect("context not found"),
+        Some(id) => get_context_instance(Some(id)).unwrap_or_else(|| Arc::new(Context::current())),
         None => Arc::new(Context::current()),
     }
 }
@@ -54,7 +53,9 @@ pub fn get_context_instance(instance_id: Option<u64>) -> Option<Arc<Context>> {
     if let Some(id) = instance_id {
         debug!("Getting context instance {}", id);
         CONTEXT_STORAGE.with(|storage| {
-            let maybe_context = storage.borrow().get(&id).cloned();
+            let maybe_context = storage.borrow().get(&id).cloned().or_else(|| {
+                DETACHED_SPAN_STORAGE.with(|detached| detached.borrow().get(&id).cloned())
+            });
             if let Some(ref ctx) = maybe_context {
                 debug!(
                     "Cloned context instance {} (ref count after clone = {})",
@@ -76,9 +77,7 @@ pub fn store_context_instance(context: Arc<Context>) -> Option<u64> {
         "Storing context instance {} (ref count after clone = {})",
         instance_id, count
     );
-    CONTEXT_STORAGE.with(|storage| {
-        storage.borrow_mut().insert(instance_id, context)
-    });
+    CONTEXT_STORAGE.with(|storage| storage.borrow_mut().insert(instance_id, context));
 
     Some(instance_id)
 }
@@ -87,12 +86,13 @@ pub fn store_context_instance(context: Arc<Context>) -> Option<u64> {
 pub fn maybe_remove_context_instance(instance_id: Option<u64>) {
     if let Some(id) = instance_id {
         debug!("Maybe remove context for instance {}", id);
-        CONTEXT_STORAGE.with(|storage| {
+        let remove_if_unowned = |storage: &RefCell<HashMap<u64, Arc<Context>>>| {
             let mut map = storage.borrow_mut();
             match map.get(&id) {
                 Some(context) => {
                     let count = Arc::strong_count(context);
-                    if count == 1 { //the only reference is in CONTEXT_STORAGE
+                    if count == 1 {
+                        //the only reference is in CONTEXT_STORAGE
                         debug!(
                             "Removing context instance {} (ref count = 1, no external holders)",
                             id
@@ -112,13 +112,29 @@ pub fn maybe_remove_context_instance(instance_id: Option<u64>) {
                     );
                 }
             }
-        });
+        };
+        CONTEXT_STORAGE.with(remove_if_unowned);
+        DETACHED_SPAN_STORAGE.with(remove_if_unowned);
     }
 }
 
 pub fn remove_context_instance(instance_id: u64) {
     debug!("Removing context instance {}", instance_id);
     CONTEXT_STORAGE.with(|storage| storage.borrow_mut().remove(&instance_id));
+    DETACHED_SPAN_STORAGE.with(|storage| storage.borrow_mut().remove(&instance_id));
+}
+
+fn move_detached_span_context(instance_id: u64) {
+    let context = CONTEXT_STORAGE.with(|storage| storage.borrow_mut().remove(&instance_id));
+    let Some(context) = context else {
+        return;
+    };
+    let contains_span = context.span().span_context().is_valid();
+    if contains_span {
+        DETACHED_SPAN_STORAGE.with(|storage| {
+            storage.borrow_mut().insert(instance_id, context);
+        });
+    }
 }
 
 pub fn attach_context(instance_id: Option<u64>) -> Result<(), &'static str> {
@@ -142,25 +158,34 @@ pub fn attach_context(instance_id: Option<u64>) -> Result<(), &'static str> {
     }
 }
 
-pub fn detach_context(instance_id: Option<u64>) {
-    if let Some(id) = instance_id {
-        debug!("Detaching context instance {}", id);
-        GUARD_STACK.with(|stack| {
-            stack.borrow_mut().pop().map(|(_guard, stack_id)| {
-                if stack_id == id {
-                    maybe_remove_context_instance(Some(stack_id));
-                } else {
-                    debug!("Not detaching context instance {}, is not top-most", id);
-                }
-            });
-        });
+pub fn detach_context(instance_id: Option<u64>) -> i64 {
+    let Some(id) = instance_id else {
+        return DETACHED;
+    };
+    debug!("Detaching context instance {}", id);
+
+    let status = GUARD_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        match stack.last() {
+            None => INACTIVE,
+            Some((_, stack_id)) if *stack_id != id => MISMATCH,
+            Some(_) => {
+                stack.pop();
+                0
+            }
+        }
+    });
+
+    if status == 0 {
+        move_detached_span_context(id);
+    } else {
+        debug!("Not detaching context instance {}, status={}", id, status);
     }
+    status
 }
 
 pub fn current_context_instance_id() -> Option<u64> {
-    GUARD_STACK.with(|stack| {
-        stack.borrow().last().map(|(_, id)| *id)
-    })
+    GUARD_STACK.with(|stack| stack.borrow().last().map(|(_, id)| *id))
 }
 
 fn new_instance_id() -> u64 {
@@ -194,7 +219,9 @@ pub fn build_storage_class(
             *object.as_mut_state() = Some(context);
             Ok::<_, phper::Error>(object)
         })
-        .return_type(ReturnType::new(ReturnTypeHint::ClassEntry(String::from(r"OpenTelemetry\Context\ContextInterface"))));
+        .return_type(ReturnType::new(ReturnTypeHint::ClassEntry(String::from(
+            r"OpenTelemetry\Context\ContextInterface",
+        ))));
 
     let scope_ce_attach = scope_ce.clone();
     class
@@ -205,40 +232,55 @@ pub fn build_storage_class(
             attach_context(opt_instance_id).map_err(phper::Error::boxed)?;
 
             let mut object = scope_ce_attach.init_object()?;
+            object.as_mut_state().context = get_context_instance(opt_instance_id);
             if let Some(id) = opt_instance_id {
                 object.set_property("context_id", id as i64);
             }
             Ok::<_, phper::Error>(object)
         })
-        .argument(Argument::new("context").with_type_hint(ArgumentTypeHint::ClassEntry(String::from(r"OpenTelemetry\Context\ContextInterface"))))
-        .return_type(ReturnType::new(ReturnTypeHint::ClassEntry(String::from(r"OpenTelemetry\Context\ScopeInterface"))));
+        .argument(
+            Argument::new("context").with_type_hint(ArgumentTypeHint::ClassEntry(String::from(
+                r"OpenTelemetry\Context\ContextInterface",
+            ))),
+        )
+        .return_type(ReturnType::new(ReturnTypeHint::ClassEntry(String::from(
+            r"OpenTelemetry\Context\ScopeInterface",
+        ))));
 
     let scope_ce_scope = scope_ce.clone();
     class
         .add_method("scope", Visibility::Public, move |_, _arguments| {
-            let popped = GUARD_STACK.with(|stack| {
-                stack.borrow_mut().pop()
-            });
-            match popped {
-                Some((_guard, context_id)) => {
+            let current =
+                GUARD_STACK.with(|stack| stack.borrow().last().map(|(_, context_id)| *context_id));
+            match current {
+                Some(context_id) => {
                     let mut object = scope_ce_scope.init_object()?;
+                    object.as_mut_state().context = get_context_instance(Some(context_id));
                     object.set_property("context_id", context_id as i64);
                     Ok::<_, phper::Error>(object.into())
                 }
-                None => {
-                    Ok::<_, phper::Error>(ZVal::from(()))
-                }
+                None => Ok::<_, phper::Error>(ZVal::from(())),
             }
         })
-        .return_type(ReturnType::new(ReturnTypeHint::ClassEntry(String::from(r"OpenTelemetry\Context\ScopeInterface"))).allow_null());
+        .return_type(
+            ReturnType::new(ReturnTypeHint::ClassEntry(String::from(
+                r"OpenTelemetry\Context\ScopeInterface",
+            )))
+            .allow_null(),
+        );
 }
 
 pub fn get_context_ids() -> Vec<u64> {
-    CONTEXT_STORAGE.with(|cell| {
+    let mut keys = CONTEXT_STORAGE.with(|cell| {
         let storage = cell.borrow();
-        let keys: Vec<u64> = storage.keys().cloned().collect();
-        keys
-    })
+        storage.keys().cloned().collect::<Vec<_>>()
+    });
+    DETACHED_SPAN_STORAGE.with(|cell| {
+        keys.extend(cell.borrow().keys().cloned());
+    });
+    keys.sort_unstable();
+    keys.dedup();
+    keys
 }
 
 pub fn store_guard(exec_data: *mut ExecuteData, guard: ContextGuard) {
@@ -255,6 +297,7 @@ pub fn take_guard(exec_data: *mut ExecuteData) -> Option<ContextGuard> {
 
 pub fn clear_context_storage() {
     CONTEXT_STORAGE.with(|storage| storage.borrow_mut().clear());
+    DETACHED_SPAN_STORAGE.with(|storage| storage.borrow_mut().clear());
     GUARD_STACK.with(|stack| stack.borrow_mut().clear());
     CONTEXT_GUARD_MAP.with(|map| map.borrow_mut().clear());
 }

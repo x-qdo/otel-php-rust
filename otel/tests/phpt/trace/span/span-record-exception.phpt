@@ -27,9 +27,13 @@ array(1) {
     ["timestamp"]=>
     int(%d)
     ["attributes"]=>
-    array(1) {
+    array(3) {
       ["exception.message"]=>
       string(6) "kaboom"
+      ["exception.type"]=>
+      string(9) "Exception"
+      ["exception.stacktrace"]=>
+      string(9) "#0 {main}"
     }
   }
 }

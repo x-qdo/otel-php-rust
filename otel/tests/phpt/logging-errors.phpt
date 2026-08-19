@@ -23,5 +23,5 @@ Globals::tracerProvider()
 Globals::tracerProvider()->forceFlush();
 ?>
 --EXPECTF--
-[%s] [ERROR] [pid=%d] [ThreadId(%d)] opentelemetry_sdk: BatchSpanProcessor.ExportError message= name=BatchSpanProcessor.ExportError error=Operation failed: %s
+[%s] [ERROR] [pid=%d] [ThreadId(%d)] otel::trace::batch_processor: event src/trace/batch_processor.rs:%d message=BoundedBatchProcessor.ExportError; further exporter failure diagnostics are suppressed until shutdown
 %A

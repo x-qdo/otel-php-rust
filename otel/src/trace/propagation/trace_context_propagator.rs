@@ -1,18 +1,15 @@
+use crate::context::{
+    context::{ContextClassEntity, get_instance_id},
+    storage,
+};
 use phper::{
     classes::{ClassEntity, Interface, StateClass, Visibility},
     functions::{Argument, ReturnType},
     types::{ArgumentTypeHint, ReturnTypeHint},
     values::ZVal,
 };
-use std::sync::Arc;
 use std::convert::Infallible;
-use crate::context::{
-    context::{
-        get_instance_id,
-        ContextClassEntity,
-    },
-    storage,
-};
+use std::sync::Arc;
 
 pub type TraceContextPropagatorClass = StateClass<()>;
 
@@ -33,12 +30,14 @@ pub fn make_trace_context_propagator_class(
     class
         .add_method("inject", Visibility::Public, |_, arguments| -> phper::Result<()> {
             // Context (optional, default to Context::current)
-            let context_obj = arguments[2].expect_mut_z_obj()?;
-            let context_id = get_instance_id(context_obj);
+            let context_id = arguments
+                .get(2)
+                .and_then(|argument| argument.as_z_obj())
+                .and_then(get_instance_id);
             tracing::debug!("inject() using context_id = {:?}", context_id);
 
-            let context = storage::get_context_instance(context_id);
-            let context_ref = context.as_ref().map(|arc| arc.as_ref()).expect("invalid context");
+            let context = storage::get_context_instance(context_id)
+                .unwrap_or_else(storage::current_context);
 
             // Carrier gymnastics (PHP array passed by ref)
             let carrier_ref = arguments[0].expect_mut_z_ref()?;
@@ -53,7 +52,7 @@ pub fn make_trace_context_propagator_class(
 
             // Use global propagator to inject
             opentelemetry::global::get_text_map_propagator(|prop| {
-                prop.inject_context(context_ref, &mut out_map);
+                prop.inject_context(context.as_ref(), &mut out_map);
             });
 
             for (k, v) in out_map {
@@ -90,14 +89,10 @@ pub fn make_trace_context_propagator_class(
             }
 
             // Parent context (optional)
-            let context_id = match arguments.get(2) {
-                Some(val) => {
-                    let obj = val.expect_z_obj()?;
-                    let id = obj.get_property("context_id").as_long().unwrap_or(0);
-                    if id > 0 { Some(id as u64) } else { None }
-                }
-                None => None,
-            };
+            let context_id = arguments
+                .get(2)
+                .and_then(|argument| argument.as_z_obj())
+                .and_then(get_instance_id);
 
             let parent_cx = context_id
                 .and_then(|id| storage::get_context_instance(Some(id)))
@@ -115,14 +110,21 @@ pub fn make_trace_context_propagator_class(
             Ok::<_, phper::Error>(obj)
         })
         .argument(Argument::new("carrier"))
-        .argument(Argument::new("getter").allow_null().with_default_value("null"))
-        .argument(Argument::new("context")
-            .with_type_hint(ArgumentTypeHint::ClassEntry(r"OpenTelemetry\Context\ContextInterface".to_string()))
-            .with_default_value("null")
-            .allow_null()
+        .argument(
+            Argument::new("getter")
+                .allow_null()
+                .with_default_value("null"),
+        )
+        .argument(
+            Argument::new("context")
+                .with_type_hint(ArgumentTypeHint::ClassEntry(
+                    r"OpenTelemetry\Context\ContextInterface".to_string(),
+                ))
+                .with_default_value("null")
+                .allow_null(),
         )
         .return_type(ReturnType::new(ReturnTypeHint::ClassEntry(
-            r"OpenTelemetry\Context\ContextInterface".to_string()
+            r"OpenTelemetry\Context\ContextInterface".to_string(),
         )));
 
     class

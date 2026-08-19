@@ -3,10 +3,13 @@
 EXTENSION_NAME = otel
 EXTENSION_FILE = target/release/lib${EXTENSION_NAME}.so
 EXTENSION_INSTALL_PATH = $(shell php-config --extension-dir)/${EXTENSION_NAME}.so
+# ALLOCATOR=system (default) or ALLOCATOR=mimalloc; see README "Allocator".
+ALLOCATOR ?= system
+CARGO_FEATURES = $(if $(filter mimalloc,$(ALLOCATOR)),--features mimalloc,)
 
 build:
-	@echo "Building..."
-	cargo build --release
+	@echo "Building (allocator=$(ALLOCATOR))..."
+	cargo build --release $(CARGO_FEATURES)
 	cp target/release/libotel.so modules/otel.so
 build-test:
 	# phpize is only required to provide run-tests.php

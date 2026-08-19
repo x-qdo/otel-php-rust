@@ -1,42 +1,36 @@
-use anyhow::Context as _;
-use phper::{
-    eg,
-    ini::ini_get,
-    pg,
-    sg,
-    sys,
-    arrays::{IterKey, ZArr},
-    values::ZVal,
-};
-use once_cell::sync::Lazy;
-use std::{
-    cell::RefCell,
-    collections::HashMap,
-    env,
-    fs,
-    path::{Path, PathBuf},
-    sync::Arc,
-    sync::Mutex,
-};
-use opentelemetry::{
-    global,
-    Context,
-    InstrumentationScope,
-    KeyValue,
-    trace::{SpanKind, Tracer, TraceContextExt, TracerProvider},
-};
-use opentelemetry_sdk::propagation::TraceContextPropagator;
-use opentelemetry_semantic_conventions as SemConv;
 use crate::{
-    auto,
-    config,
+    auto, config,
     context::storage,
+    error::php_error_to_attributes,
     logging,
     logs::logger_provider,
     module,
-    error::php_error_to_attributes,
     trace::{local_root_span, tracer_provider},
-    util::{get_sapi_module_name},
+    util::get_sapi_module_name,
+};
+use anyhow::Context as _;
+use once_cell::sync::Lazy;
+use opentelemetry::{
+    Context, InstrumentationScope, KeyValue, global,
+    trace::{SpanKind, TraceContextExt, Tracer, TracerProvider},
+};
+use opentelemetry_sdk::propagation::TraceContextPropagator;
+use opentelemetry_semantic_conventions as SemConv;
+use phper::{
+    arrays::{IterKey, ZArr},
+    eg,
+    ini::ini_get,
+    pg, sg, sys,
+    values::ZVal,
+};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    env, fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+    sync::Mutex,
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 thread_local! {
@@ -44,7 +38,10 @@ thread_local! {
     static OTEL_CONTEXT_ID: RefCell<Option<u64>> = RefCell::new(None);
 }
 //backup mutating environment variables for request duration
-static ENV_BACKUP: Lazy<Mutex<HashMap<u32, HashMap<String, String>>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+static ENV_BACKUP: Lazy<Mutex<HashMap<u32, HashMap<String, String>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+// The global propagator is process-wide and inherited across fork; install it once.
+static PROPAGATOR_INSTALLED: AtomicBool = AtomicBool::new(false);
 
 /// RINIT handler.
 pub fn on_request_init() {
@@ -55,6 +52,7 @@ pub fn on_request_init() {
     logging::init_once();
     tracing::debug!("OpenTelemetry::RINIT");
     init_environment();
+    tracer_provider::begin_request();
 
     if is_disabled() {
         tracing::debug!("OpenTelemetry::RINIT: SDK disabled, skipping initialization");
@@ -63,7 +61,9 @@ pub fn on_request_init() {
 
     tracer_provider::init_once();
     logger_provider::init_once();
-    global::set_text_map_propagator(TraceContextPropagator::new());
+    if !PROPAGATOR_INSTALLED.swap(true, Ordering::AcqRel) {
+        global::set_text_map_propagator(TraceContextPropagator::new());
+    }
 
     init();
 }
@@ -75,6 +75,7 @@ pub fn on_request_shutdown() {
     }
     tracing::debug!("OpenTelemetry::RSHUTDOWN");
     shutdown();
+    tracer_provider::end_request();
     if let Some(plugin_manager) = auto::plugin_manager::get_global() {
         let pm = plugin_manager.read().expect("Failed to acquire read lock");
         pm.request_shutdown();
@@ -93,8 +94,20 @@ pub fn is_disabled() -> bool {
         }
     }
     match std::env::var("OTEL_SDK_DISABLED") {
-        Ok(val) => val == "true",
-        Err(_) => false,
+        Ok(value) if value.eq_ignore_ascii_case("true") => true,
+        Ok(value) if value.is_empty() || value.eq_ignore_ascii_case("false") => false,
+        Ok(value) => {
+            tracing::warn!(
+                "Invalid OTEL_SDK_DISABLED value {:?}; only case-insensitive true or false is supported, using false",
+                value
+            );
+            false
+        }
+        Err(std::env::VarError::NotPresent) => false,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            tracing::warn!("OTEL_SDK_DISABLED is not valid Unicode; using false");
+            false
+        }
     }
 }
 
@@ -189,11 +202,12 @@ fn process_dotenv() {
             }
             if let Some(resource_attributes) = resource_attributes {
                 //merge with original env var, if it exists
-                let mut merged = if let Some(existing) = std::env::var("OTEL_RESOURCE_ATTRIBUTES").ok() {
-                    parse_resource_attributes(&existing)
-                } else {
-                    HashMap::new()
-                };
+                let mut merged =
+                    if let Some(existing) = std::env::var("OTEL_RESOURCE_ATTRIBUTES").ok() {
+                        parse_resource_attributes(&existing)
+                    } else {
+                        HashMap::new()
+                    };
 
                 // Overwrite with values from dotenv
                 for (k, v) in parse_resource_attributes(&resource_attributes) {
@@ -238,9 +252,13 @@ fn find_dotenv() -> Option<PathBuf> {
             let docroot = match Path::new(&document_root).canonicalize() {
                 Ok(path) => path,
                 Err(err) => {
-                    tracing::warn!("Failed to canonicalize DOCUMENT_ROOT '{}': {}", document_root, err);
+                    tracing::warn!(
+                        "Failed to canonicalize DOCUMENT_ROOT '{}': {}",
+                        document_root,
+                        err
+                    );
                     return env_in_dir(script_dir);
-                },
+                }
             };
             let mut current = match script_dir.canonicalize() {
                 Ok(path) => path,
@@ -307,9 +325,7 @@ fn is_excluded_url(uri: &str) -> bool {
                     }
                 })
         }
-        Err(_) => {
-            false
-        }
+        Err(_) => false,
     }
 }
 
@@ -342,14 +358,23 @@ fn init() {
         };
     }
 
-    tracing::debug!("RINIT::otel request is being traced, name={}", span_name.clone().unwrap_or("unknown".to_string()));
+    tracing::debug!(
+        "RINIT::otel request is being traced, name={}",
+        span_name.clone().unwrap_or("unknown".to_string())
+    );
     let tracer_provider = tracer_provider::get_tracer_provider();
     let scope = InstrumentationScope::builder("php:rinit").build();
     let tracer = tracer_provider.tracer_with_scope(scope);
     let span_builder = tracer.span_builder(span_name.unwrap_or("unknown".to_string()));
     let mut attributes = span_builder.attributes.clone().unwrap_or_default();
-    attributes.push(KeyValue::new(SemConv::trace::URL_FULL, request_details.uri.unwrap_or_default()));
-    attributes.push(KeyValue::new(SemConv::trace::HTTP_REQUEST_METHOD, request_details.method.unwrap_or_default()));
+    attributes.push(KeyValue::new(
+        SemConv::trace::URL_FULL,
+        request_details.uri.unwrap_or_default(),
+    ));
+    attributes.push(KeyValue::new(
+        SemConv::trace::HTTP_REQUEST_METHOD,
+        request_details.method.unwrap_or_default(),
+    ));
     //attributes.push(KeyValue::new(SemConv::trace::HTTP_REQUEST_BODY_SIZE, request_details.body_length.unwrap_or_default())); //experimental
     // TODO other HTTP attributes are experimental
 
@@ -395,7 +420,10 @@ fn shutdown() {
         if span.span_context().is_valid() {
             if is_http_request {
                 let response_code = get_response_status_code();
-                span.set_attribute(KeyValue::new(SemConv::trace::HTTP_RESPONSE_STATUS_CODE, response_code as i64));
+                span.set_attribute(KeyValue::new(
+                    SemConv::trace::HTTP_RESPONSE_STATUS_CODE,
+                    response_code as i64,
+                ));
                 if response_code >= 500 {
                     let mut func = ZVal::from("error_get_last");
                     let mut args: Vec<ZVal> = Vec::new();
@@ -531,7 +559,9 @@ fn parse_resource_attributes(s: &str) -> HashMap<String, String> {
         .filter_map(|pair| {
             let mut parts = pair.splitn(2, '=');
             match (parts.next(), parts.next()) {
-                (Some(key), Some(value)) if !key.is_empty() && !value.is_empty() => Some((key.trim().to_string(), value.trim().to_string())),
+                (Some(key), Some(value)) if !key.is_empty() && !value.is_empty() => {
+                    Some((key.trim().to_string(), value.trim().to_string()))
+                }
                 _ => None,
             }
         })

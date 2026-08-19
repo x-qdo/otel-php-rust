@@ -60,6 +60,7 @@ pub fn add_module_info(module: &mut Module) {
     module.add_info("opentelemetry-rust", crate::OPENTELEMETRY_VERSION);
     module.add_info("phper", crate::PHPER_VERSION);
     module.add_info("tokio", crate::TOKIO_VERSION);
+    module.add_info("allocator", crate::ALLOCATOR_NAME);
 
     //which auto-instrumentation mechanism is enabled
     #[cfg(otel_observer_supported)]

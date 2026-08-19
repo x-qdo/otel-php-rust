@@ -1,5 +1,4 @@
 target/
-Cargo.lock
 
 *.diff
 *.exp
@@ -7,6 +6,9 @@ Cargo.lock
 *.out
 *.php
 *.sh
+
+!tests/integration/*.php
+!tests/integration/*.sh
 
 Makefile.fragments
 Makefile.objects

@@ -64,8 +64,8 @@ pub fn register_classes_and_interfaces(module: &mut Module) {
     let _logs_memory_exporter_class = module.add_class(make_logs_memory_exporter_class());
 
     let span_class = module.add_class(make_span_class(scope_class.clone(), span_context_class.clone(), context_class.clone(), &span_interface));
-    let non_recording_span_class = module.add_class(make_non_recording_span_class(scope_class.clone(), span_context_class.clone(), context_class.clone(), &span_interface));
-    let span_builder_class = module.add_class(make_span_builder_class(span_class.clone()));
+    let non_recording_span_class = module.add_class(make_non_recording_span_class(scope_class.clone(), span_context_class.clone(), context_class.clone(), span_class.clone(), &span_interface));
+    let span_builder_class = module.add_class(make_span_builder_class(span_class.clone(), non_recording_span_class.clone()));
     let _local_root_span_class = module.add_class(make_local_root_span_class(span_class.clone(), non_recording_span_class.clone()));
 
     let tracer_class = module.add_class(make_tracer_class(span_builder_class.clone(), tracer_interface));

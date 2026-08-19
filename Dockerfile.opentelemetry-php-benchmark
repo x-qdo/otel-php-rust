@@ -1,0 +1,26 @@
+ARG PHP_VERSION=8.2
+FROM php-rust:${PHP_VERSION}
+
+ARG PHP_VERSION
+
+USER root
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        php${PHP_VERSION}-grpc \
+        php${PHP_VERSION}-protobuf \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --chown=php-rust:php-rust \
+    otel/tests/integration/opentelemetry-php/composer.json \
+    otel/tests/integration/opentelemetry-php/composer.lock \
+    /opt/opentelemetry-php/
+
+USER php-rust
+
+RUN composer install \
+    --working-dir=/opt/opentelemetry-php \
+    --no-dev \
+    --no-interaction \
+    --no-progress \
+    --classmap-authoritative

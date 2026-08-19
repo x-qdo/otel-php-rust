@@ -11,8 +11,36 @@ services:
     - ./otel/.cargo/registry:/home/php-rust/.cargo/registry
     - ./otel/.cargo/git:/home/php-rust/.cargo/git
     user: php-rust
+  php-official:
+    build:
+      context: .
+      dockerfile: Dockerfile.opentelemetry-php-benchmark
+      args:
+        PHP_VERSION: ${PHP_VERSION}
+    image: otel-php-reference:${PHP_VERSION}
+    volumes:
+    - ./otel/:/usr/src/myapp
+    user: php-rust
   collector:
     image: otel/opentelemetry-collector-contrib
     command: [ "--config=/etc/otel-collector-config.yml" ]
     volumes:
       - ./files/collector/otel-collector-config.yml:/etc/otel-collector-config.yml
+      - ${OTEL_CAPTURE_DIR:-/tmp/otel-php-rust-capture}:/var/lib/otel
+  blackhole:
+    image: python:3.13-alpine
+    command: [ "python", "/opt/blackhole_server.py" ]
+    volumes:
+      - ./otel/tests/integration/blackhole_server.py:/opt/blackhole_server.py:ro
+    read_only: true
+  collector-benchmark:
+    image: otel/opentelemetry-collector-contrib
+    command: [ "--config=/etc/otel-collector-config.yml" ]
+    volumes:
+      - ./files/collector/otel-collector-benchmark.yml:/etc/otel-collector-config.yml:ro
+  collector-auth:
+    image: otel/opentelemetry-collector-contrib
+    command: [ "--config=/etc/otel-collector-config.yml" ]
+    volumes:
+      - ./files/collector/otel-collector-auth.yml:/etc/otel-collector-config.yml:ro
+      - ${OTEL_AUTH_CAPTURE_DIR:-/tmp/otel-php-rust-auth-capture}:/var/lib/otel

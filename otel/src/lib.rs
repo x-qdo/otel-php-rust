@@ -4,6 +4,10 @@ use phper::{
 };
 use std::env;
 
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 pub mod context;
 pub mod trace;
 pub mod class_registry;
@@ -19,6 +23,13 @@ pub mod module;
 pub mod auto;
 
 include!(concat!(env!("OUT_DIR"), "/package_versions.rs"));
+
+/// Global allocator compiled into this build, reported via phpinfo().
+pub const ALLOCATOR_NAME: &str = if cfg!(feature = "mimalloc") {
+    "mimalloc"
+} else {
+    "system"
+};
 
 #[php_get_module]
 pub fn get_module() -> Module {

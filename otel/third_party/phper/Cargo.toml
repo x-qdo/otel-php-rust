@@ -1,0 +1,53 @@
+# Copyright (c) 2022 PHPER Framework Team
+# PHPER is licensed under Mulan PSL v2.
+# You can use this software according to the terms and conditions of the Mulan
+# PSL v2. You may obtain a copy of Mulan PSL v2 at:
+#          http://license.coscl.org.cn/MulanPSL2
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY
+# KIND, EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
+# NON-INFRINGEMENT, MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
+
+[package]
+name = "phper"
+description = "The framework that allows us to write PHP extensions using pure and safe Rust whenever possible."
+documentation = "https://docs.rs/phper"
+readme = "README.md"
+keywords = ["php", "binding", "extension", "module"]
+version = "0.17.0"
+authors = ["PHPER Framework Team", "jmjoy <jmjoy@apache.org>"]
+edition = "2024"
+rust-version = "1.85"
+repository = "https://github.com/phper-framework/phper"
+license = "MulanPSL-2.0"
+
+[dependencies]
+cfg-if = "1.0.0"
+derive_more = { version = "2.0.1", features = ["from", "constructor"] }
+indexmap = "2.7.1"
+phper-alloc = "0.16.0"
+phper-macros = "0.15.2"
+phper-sys = "0.15.3"
+sealed = "0.6.0"
+thiserror = "2.0.11"
+
+[build-dependencies]
+phper-build = "0.15.3"
+phper-sys = "0.15.3"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(phper_major_version, values("7"))',
+    'cfg(phper_major_version, values("8"))',
+    'cfg(phper_minor_version, values("0"))',
+    'cfg(phper_minor_version, values("1"))',
+    'cfg(phper_minor_version, values("2"))',
+    'cfg(phper_minor_version, values("3"))',
+    'cfg(phper_minor_version, values("4"))',
+    'cfg(phper_zts)',
+    'cfg(phper_enum_supported)',
+] }
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]
+all-features = true

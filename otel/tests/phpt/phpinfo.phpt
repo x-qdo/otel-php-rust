@@ -12,6 +12,8 @@ otel
 
 version => %s
 %A
+allocator => %s
+%A
 
 Directive => Local Value => Master Value
 otel.auto.disabled_plugins => no value => no value

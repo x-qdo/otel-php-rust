@@ -2,6 +2,7 @@ use crate::context::{
     scope::ScopeClassEntity,
     storage::{self, StorageClassEntity},
 };
+use opentelemetry::Context;
 use phper::{
     alloc::ToRefOwned,
     classes::{ClassEntity, Interface, StateClass, Visibility},
@@ -9,13 +10,7 @@ use phper::{
     types::ReturnTypeHint,
     values::ZVal,
 };
-use std::{
-    convert::Infallible,
-    sync::Arc,
-};
-use opentelemetry::{
-    Context,
-};
+use std::{convert::Infallible, sync::Arc};
 use tracing::debug;
 
 const CONTEXT_CLASS_NAME: &str = r"OpenTelemetry\Context\Context";
@@ -42,18 +37,16 @@ pub fn build_context_class(
     class.implements(context_interface);
     class.add_property("context_id", Visibility::Private, 0i64);
 
-    class
-        .add_method("__construct", Visibility::Private, |_, _| {
-            Ok::<_, Infallible>(())
-        });
+    class.add_method("__construct", Visibility::Private, |_, _| {
+        Ok::<_, Infallible>(())
+    });
 
-    class
-        .add_method("__destruct", Visibility::Public, |this, _| {
-            let context_id = get_instance_id(this);
-            debug!("Context::__destruct for context_id = {:?}", context_id);
-            storage::maybe_remove_context_instance(context_id);
-            Ok::<_, Infallible>(())
-        });
+    class.add_method("__destruct", Visibility::Public, |this, _| {
+        let context_id = get_instance_id(this);
+        debug!("Context::__destruct for context_id = {:?}", context_id);
+        storage::maybe_remove_context_instance(context_id);
+        Ok::<_, Infallible>(())
+    });
 
     class
         .add_static_method("getCurrent", Visibility::Public, {
@@ -67,8 +60,9 @@ pub fn build_context_class(
                 Ok::<_, phper::Error>(object)
             }
         })
-        .return_type(ReturnType::new(ReturnTypeHint::ClassEntry(String::from(r"OpenTelemetry\Context\ContextInterface"))));
-
+        .return_type(ReturnType::new(ReturnTypeHint::ClassEntry(String::from(
+            r"OpenTelemetry\Context\ContextInterface",
+        ))));
 
     //TODO: this doesn't usefully work, since the "key" is the type of the struct,
     // which needs to be created ahead of time. And it can only store scalar values.
@@ -86,15 +80,19 @@ pub fn build_context_class(
         .argument(Argument::new("value"));
 
     class
-        .add_method("get", Visibility::Public, |this, _arguments| -> phper::Result<ZVal> {
-            let arc = this.as_state().as_ref().unwrap();
-            let context = &**arc; // deref Arc<Context>
-            let value = context.get::<Test>();
-            match value {
-                Some(value) => Ok::<_, phper::Error>(ZVal::from(value.0.as_str())),
-                None => Ok(ZVal::default()),
-            }
-        })
+        .add_method(
+            "get",
+            Visibility::Public,
+            |this, _arguments| -> phper::Result<ZVal> {
+                let arc = this.as_state().as_ref().unwrap();
+                let context = &**arc; // deref Arc<Context>
+                let value = context.get::<Test>();
+                match value {
+                    Some(value) => Ok::<_, phper::Error>(ZVal::from(value.0.as_str())),
+                    None => Ok(ZVal::default()),
+                }
+            },
+        )
         .argument(Argument::new("key"));
 
     class
@@ -109,19 +107,20 @@ pub fn build_context_class(
                 storage::attach_context(instance_id).map_err(phper::Error::boxed)?;
 
                 let mut object = scope_ce.init_object()?;
+                object.as_mut_state().context = Some(arc);
                 object.set_property("context_id", instance_id.unwrap_or(0) as i64);
 
                 Ok::<_, phper::Error>(object)
             }
         })
-        .return_type(ReturnType::new(ReturnTypeHint::ClassEntry(String::from(r"OpenTelemetry\Context\ScopeInterface"))));
+        .return_type(ReturnType::new(ReturnTypeHint::ClassEntry(String::from(
+            r"OpenTelemetry\Context\ScopeInterface",
+        ))));
 
-    class
-        .add_static_method("storage", Visibility::Public, move |_| {
-            let object = storage_ce.init_object()?;
-            Ok::<_, phper::Error>(object)
-        });
-
+    class.add_static_method("storage", Visibility::Public, move |_| {
+        let object = storage_ce.init_object()?;
+        Ok::<_, phper::Error>(object)
+    });
 }
 
 /// Get context instance id from a PHP object

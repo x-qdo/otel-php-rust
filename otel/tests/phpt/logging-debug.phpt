@@ -23,8 +23,8 @@ Globals::tracerProvider()->forceFlush();
 %A
 [%s] [DEBUG] [%s] [ThreadId(%d)] %s message=OpenTelemetry::RINIT
 %A
-[%s] [DEBUG] [%s] [ThreadId(%d)] opentelemetry_sdk: BatchSpanProcessor.ThreadStarted message= name=BatchSpanProcessor.ThreadStarted interval_in_millisecs=5000 max_export_batch_size=512 max_queue_size=2048%A
-[%s] [DEBUG] [%s] [ThreadId(%d)] opentelemetry_sdk: BatchSpanProcessor.ExportingDueToForceFlush message= name=BatchSpanProcessor.ExportingDueToForceFlush
+[%s] [DEBUG] [%s] [ThreadId(%d)] otel::trace::batch_processor: event src/trace/batch_processor.rs:%d message=BoundedBatchProcessor.ThreadStarted schedule_delay_ms=1000 max_export_batch_size=512 max_queue_size=2048%A
+[%s] [DEBUG] [%s] [ThreadId(%d)] otel::trace::batch_processor: event src/trace/batch_processor.rs:%d message=BoundedBatchProcessor.ExportingDueToForceFlush
 Spans
 Resource
 %A

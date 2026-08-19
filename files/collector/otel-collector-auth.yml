@@ -1,0 +1,28 @@
+extensions:
+  bearertokenauth/server:
+    scheme: Bearer
+    token: trace-secret
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        auth:
+          authenticator: bearertokenauth/server
+      http:
+        endpoint: 0.0.0.0:4318
+        auth:
+          authenticator: bearertokenauth/server
+
+exporters:
+  file:
+    path: /var/lib/otel/traces.json
+    flush_interval: 100ms
+
+service:
+  extensions: [bearertokenauth/server]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [file]

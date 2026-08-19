@@ -2,6 +2,8 @@
 Get SpanContext from a Span
 --EXTENSIONS--
 otel
+--INI--
+otel.cli.enabled=1
 --ENV--
 OTEL_TRACES_EXPORTER=memory
 OTEL_SPAN_PROCESSOR=simple

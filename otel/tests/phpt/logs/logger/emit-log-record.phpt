@@ -124,6 +124,6 @@ array(12) {
     ["telemetry.sdk.name"]=>
     string(%d) "String(Static("ext-otel"))"
     ["telemetry.sdk.version"]=>
-    string(%d) "String(Static("%d.%d.%d"))"
+    string(%d) "String(Static("%s"))"
   }
 }

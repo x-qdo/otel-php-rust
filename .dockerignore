@@ -1,0 +1,8 @@
+.git
+.codebase-memory
+otel/.cargo
+otel/autom4te.cache
+otel/build
+otel/modules
+otel/target
+otel/tests/auto/*/vendor
