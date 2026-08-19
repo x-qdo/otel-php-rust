@@ -90,8 +90,8 @@ impl Plugin for LaminasPlugin {
         "laminas"
     }
     fn request_shutdown(&self) {
-        CONNECTION_ATTRS.lock().unwrap().clear();
-        STATEMENT_ATTRS.lock().unwrap().clear();
+        CONNECTION_ATTRS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
+        STATEMENT_ATTRS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
     }
 }
 
@@ -116,7 +116,7 @@ impl Handler for LaminasApplicationRunHandler {
 }
 
 impl LaminasApplicationRunHandler {
-    unsafe extern "C" fn pre_callback(exec_data: *mut ExecuteData) {
+    unsafe fn pre_callback(exec_data: *mut ExecuteData) {
         match get_local_root_span_context() {
             Some(ctx) => {
                 ctx.span().set_attribute(KeyValue::new(trace_attributes::PHP_FRAMEWORK_NAME, "laminas"));
@@ -128,7 +128,7 @@ impl LaminasApplicationRunHandler {
         let span_name = "Application::run".to_string();
         utils::start_and_activate_span(tracer, &span_name, vec![], exec_data, opentelemetry::trace::SpanKind::Internal);
     }
-    unsafe extern "C" fn post_callback(
+    unsafe fn post_callback(
         exec_data: *mut ExecuteData,
         _retval: &mut ZVal,
         _exception: Option<&mut ZObj>
@@ -157,7 +157,7 @@ impl Handler for LaminasCompleteRequestHandler {
 }
 
 impl LaminasCompleteRequestHandler {
-    unsafe extern "C" fn pre_callback(exec_data: *mut ExecuteData) {
+    unsafe fn pre_callback(exec_data: *mut ExecuteData) {
         //get the first argument from exec_data, which is an MvcEvent
         let exec_data_ref = unsafe { &mut *exec_data };
         let mvc_event_zval: &mut ZVal = exec_data_ref.get_mut_parameter(0);
@@ -176,9 +176,9 @@ impl LaminasCompleteRequestHandler {
                         .call("getParam", &mut [ZVal::from("exception")])
                         .ok()
                         .and_then(|mut zv| zv.as_mut_z_obj().map(|obj| obj.to_ref_owned()));
-                if exception.is_some() {
+                if let Some(mut exception) = exception {
                     tracing::debug!("Auto::Laminas::pre (MvcEvent::completeRequest) - exception found");
-                    let attributes = crate::error::php_exception_to_attributes(&mut exception.unwrap());
+                    let attributes = crate::error::php_exception_to_attributes(&mut exception);
                     span_ref.add_event("exception", attributes);
                     span_ref.set_status(Status::error(""));
                 } else {
@@ -217,7 +217,7 @@ impl Handler for LaminasRouteHandler {
 }
 
 impl LaminasRouteHandler {
-    unsafe extern "C" fn pre_callback(exec_data: *mut ExecuteData) {
+    unsafe fn pre_callback(exec_data: *mut ExecuteData) {
         tracing::debug!("Auto::Laminas::pre (MvcEvent::setRouteMatch)");
         let ctx = match get_local_root_span_context() {
             Some(ctx) => ctx,
@@ -297,7 +297,7 @@ fn extract_laminas_db_namespace(arr: &phper::arrays::ZArr) -> String {
 }
 
 impl LaminasDbConnectHandler {
-    unsafe extern "C" fn pre_callback(exec_data: *mut ExecuteData) {
+    unsafe fn pre_callback(exec_data: *mut ExecuteData) {
         utils::start_and_activate_span(
             tracer_provider::get_tracer_provider().tracer("php.otel.auto.laminas.db"),
             "connect",
@@ -330,7 +330,7 @@ impl LaminasDbConnectHandler {
                 }
             }
             let id = get_object_id(this_obj);
-            CONNECTION_ATTRS.lock().unwrap().insert(id, ConnectionInfo{
+            CONNECTION_ATTRS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(id, ConnectionInfo{
                 attributes: attributes.clone(),
                 span_context: opentelemetry::Context::current().span().span_context().clone(),
             });
@@ -338,7 +338,7 @@ impl LaminasDbConnectHandler {
         }
     }
 
-    unsafe extern "C" fn post_callback(
+    unsafe fn post_callback(
         exec_data: *mut ExecuteData,
         _retval: &mut ZVal,
         exception: Option<&mut ZObj>
@@ -371,7 +371,7 @@ impl Handler for LaminasStatementPrepareHandler {
 }
 
 impl LaminasStatementPrepareHandler {
-    unsafe extern "C" fn pre_callback(exec_data: *mut ExecuteData) {
+    unsafe fn pre_callback(exec_data: *mut ExecuteData) {
         utils::start_and_activate_span(
             tracer_provider::get_tracer_provider().tracer("php.otel.auto.laminas.db"),
             "prepare",
@@ -380,7 +380,7 @@ impl LaminasStatementPrepareHandler {
             opentelemetry::trace::SpanKind::Client
         );
     }
-    unsafe extern "C" fn post_callback(
+    unsafe fn post_callback(
         exec_data: *mut ExecuteData,
         _retval: &mut ZVal,
         exception: Option<&mut ZObj>
@@ -434,7 +434,7 @@ impl LaminasStatementPrepareHandler {
                     if let Some(connection_obj) = connection_zval.as_z_obj() {
                         let connection_id = get_object_id(connection_obj);
                         tracing::debug!("Auto::Laminas::post (Statement::prepare) - found driver connection id={}", connection_id);
-                        let connection_attrs_guard = CONNECTION_ATTRS.lock().unwrap();
+                        let connection_attrs_guard = CONNECTION_ATTRS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                         let connection_info = connection_attrs_guard.get(&connection_id);
                         if let Some(connection_info) = connection_info {
                             attributes.extend_from_slice(&connection_info.attributes);
@@ -451,7 +451,7 @@ impl LaminasStatementPrepareHandler {
 
             let id = get_object_id(this_obj);
             tracing::debug!("Auto::Laminas::post (Statement::prepare) - storing statement attributes for statement id: {}", id);
-            STATEMENT_ATTRS.lock().unwrap().insert(id, StatementInfo{
+            STATEMENT_ATTRS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(id, StatementInfo{
                 attributes,
                 span_name: execute_span_name,
                 span_context: opentelemetry::Context::current().span().span_context().clone(),
@@ -485,14 +485,14 @@ impl Handler for LaminasStatementExecuteHandler {
 }
 
 impl LaminasStatementExecuteHandler {
-    unsafe extern "C" fn pre_callback(exec_data: *mut ExecuteData) {
+    unsafe fn pre_callback(exec_data: *mut ExecuteData) {
         tracing::debug!("Auto::Laminas::pre (Statement::execute) - pre_callback called");
         let tracer = tracer_provider::get_tracer_provider().tracer("php.otel.auto.laminas.db");
         let span_name = "Statement::execute".to_string();
         utils::start_and_activate_span(tracer, &span_name, vec![], exec_data, SpanKind::Client);
     }
 
-    unsafe extern "C" fn post_callback(
+    unsafe fn post_callback(
         exec_data: *mut ExecuteData,
         _retval: &mut ZVal,
         exception: Option<&mut ZObj>
@@ -505,7 +505,7 @@ impl LaminasStatementExecuteHandler {
         if let Some(this_obj) = exec_data_ref.get_this_mut() {
             let statement_id = get_object_id(this_obj);
             tracing::debug!("Auto::Laminas::pre (Statement::execute) - found this object: id={}", statement_id);
-            if let Some(info) = STATEMENT_ATTRS.lock().unwrap().get(&statement_id) {
+            if let Some(info) = STATEMENT_ATTRS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(&statement_id) {
                 tracing::debug!("Auto::Laminas::pre (Statement::execute) - found statement attributes: {:?}", info.attributes);
                 let mut attributes = vec![];
                 attributes.extend_from_slice(&info.attributes);
@@ -544,7 +544,7 @@ impl Handler for LaminasConnectionExecuteHandler {
 }
 
 impl LaminasConnectionExecuteHandler {
-    unsafe extern "C" fn pre_callback(exec_data: *mut ExecuteData) {
+    unsafe fn pre_callback(exec_data: *mut ExecuteData) {
         tracing::debug!("Auto::Laminas::pre (Connection::execute) - pre_callback called");
         let tracer = tracer_provider::get_tracer_provider().tracer("php.otel.auto.laminas.db");
         let exec_data_ref = unsafe {&mut *exec_data};
@@ -560,7 +560,7 @@ impl LaminasConnectionExecuteHandler {
         utils::start_and_activate_span(tracer, &span_name, attributes, exec_data, opentelemetry::trace::SpanKind::Client);
     }
 
-    unsafe extern "C" fn post_callback(
+    unsafe fn post_callback(
         exec_data: *mut ExecuteData,
         _retval: &mut ZVal,
         exception: Option<&mut ZObj>
@@ -587,8 +587,8 @@ fn map_laminas_driver_to_semconv<'a>(driver: &'a str, connection_parameters: &'a
         "pdo" => {
             if let Some(dsn_zv) = connection_parameters.get("dsn") {
                 if let Some(dsn) = dsn_zv.as_z_str().and_then(|s| s.to_str().ok()) {
-                    if let Some(pos) = dsn.find(':') {
-                        match dsn[..pos].to_lowercase().as_str() {
+                    if let Some(prefix) = dsn.split(':').next() {
+                        match prefix.to_lowercase().as_str() {
                             "mysql" => "mysql",
                             "pgsql" => "postgresql",
                             "sqlite" => "sqlite",

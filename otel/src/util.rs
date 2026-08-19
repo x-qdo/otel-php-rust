@@ -1,6 +1,7 @@
 use phper::{
     arrays::{IterKey, ZArr},
-    values::ZVal,
+    errors::ArgumentCountError,
+    values::{ExecuteData, ZVal},
     sys::sapi_module,
 };
 use opentelemetry::{
@@ -66,6 +67,43 @@ fn intern_attribute_key(table: &mut HashSet<&'static str>, name: &str, capacity:
     let leaked: &'static str = Box::leak(name.to_owned().into_boxed_str());
     table.insert(leaked);
     Key::from_static_str(leaked)
+}
+
+/// Checked positional argument access for PHP handlers. phper only guarantees
+/// `arguments.len() >= declared required count`; methods that declare fewer
+/// (or no) parameters than they read must report a missing argument as PHP's
+/// `ArgumentCountError` instead of panicking on a slice index.
+pub fn arg(arguments: &[ZVal], index: usize) -> phper::Result<&ZVal> {
+    arguments
+        .get(index)
+        .ok_or_else(|| missing_argument(index, arguments.len()))
+}
+
+/// Mutable variant of [`arg`].
+pub fn arg_mut(arguments: &mut [ZVal], index: usize) -> phper::Result<&mut ZVal> {
+    let given = arguments.len();
+    arguments
+        .get_mut(index)
+        .ok_or_else(|| missing_argument(index, given))
+}
+
+fn missing_argument(index: usize, given: usize) -> phper::Error {
+    ArgumentCountError::new(current_function_name(), index + 1, given).into()
+}
+
+/// Name of the PHP function or method whose handler is running
+/// (`Class::method` or `function`), for diagnostics.
+pub fn current_function_name() -> String {
+    unsafe { ExecuteData::try_from_ptr(phper::eg!(current_execute_data)) }
+        .and_then(|execute_data| {
+            execute_data
+                .func()
+                .get_function_or_method_name()
+                .to_str()
+                .ok()
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "<unknown>".to_string())
 }
 
 /// Convert a ZVal to a single KeyValue pair based on its type. The key is

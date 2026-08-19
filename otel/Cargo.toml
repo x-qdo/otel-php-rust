@@ -18,6 +18,11 @@ crate-type = ["cdylib"]
 
 [profile.release]
 strip = "debuginfo"
+# Explicit panic strategy: panics unwind and are caught at every FFI boundary
+# (phper `invoke`, module/request hooks, object handlers, observer hooks) and
+# surface as a catchable PHP \Error or a logged no-op. `abort` would take down
+# the whole PHP-FPM worker or CLI process on any internal bug.
+panic = "unwind"
 
 [dependencies]
 phper = { path = "third_party/phper" }
@@ -44,7 +49,7 @@ mimalloc = { version = "0.1.48", optional = true }
 
 [build-dependencies]
 cargo_metadata = "0.23.0"
-phper-sys = "0.15.3"
+phper-sys = "0.15.6"
 
 [dev-dependencies]
-phper-test = "0.16.0"
+phper-test = "0.16.2"

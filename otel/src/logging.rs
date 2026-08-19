@@ -7,7 +7,7 @@ use std::{
     ffi::CStr,
     fmt::{self, Write},
     fs::OpenOptions,
-    io::{Write as _},
+    io::{self, Write as _},
     process,
     sync::{LazyLock, Mutex, OnceLock},
     thread,
@@ -21,7 +21,9 @@ static LOGGER_PIDS: LazyLock<Mutex<HashMap<u32, ()>>> = LazyLock::new(|| Mutex::
 /// spawn worker processes)
 pub fn init_once() {
     let pid = process::id();
-    let mut logger_pids = LOGGER_PIDS.lock().unwrap();
+    let mut logger_pids = LOGGER_PIDS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if logger_pids.contains_key(&pid) {
         return;
     }
@@ -57,22 +59,34 @@ fn log_message(message: &str) {
             .unwrap_or_else(|| "/dev/stderr".to_string())
     });
 
+    // `println!`/`eprintln!` panic when the descriptor is closed (a detached
+    // FPM worker, a redirected CLI); a diagnostics write failure is ignored.
     match log_file.as_str() {
         "/dev/stdout" => {
-            println!("{}", message);
+            let _ = writeln!(io::stdout().lock(), "{}", message);
         }
         "/dev/stderr" => {
-            eprintln!("{}", message);
+            let _ = writeln!(io::stderr().lock(), "{}", message);
         }
         _ => {
             match OpenOptions::new().create(true).append(true).open(log_file) {
                 Ok(mut file) => {
                     if let Err(err) = writeln!(file, "{}", message) {
-                        eprintln!("[ERROR] Failed to write to log file '{}': {}", log_file, err);
+                        let _ = writeln!(
+                            io::stderr().lock(),
+                            "[ERROR] Failed to write to log file '{}': {}",
+                            log_file,
+                            err
+                        );
                     }
                 }
                 Err(err) => {
-                    eprintln!("[ERROR] Failed to open log file '{}': {}", log_file, err);
+                    let _ = writeln!(
+                        io::stderr().lock(),
+                        "[ERROR] Failed to open log file '{}': {}",
+                        log_file,
+                        err
+                    );
                 }
             }
         }

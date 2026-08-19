@@ -9,6 +9,7 @@ target/
 
 !tests/integration/*.php
 !tests/integration/*.sh
+!tests/reflection/*.php
 
 Makefile.fragments
 Makefile.objects

@@ -85,8 +85,8 @@ impl Plugin for Zf1Plugin {
         "zf1"
     }
     fn request_shutdown(&self) {
-        STATEMENT_ATTRS.lock().unwrap().clear();
-        CONNECTION_ATTRS.lock().unwrap().clear();
+        STATEMENT_ATTRS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
+        CONNECTION_ATTRS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
     }
 }
 
@@ -109,7 +109,7 @@ impl Handler for Zf1RouteHandler {
 }
 
 impl Zf1RouteHandler {
-    unsafe extern "C" fn post_callback(
+    unsafe fn post_callback(
         exec_data: *mut ExecuteData,
         retval: &mut ZVal,
         _exception: Option<&mut ZObj>
@@ -198,7 +198,7 @@ impl Handler for Zf1SendResponseHandler {
 }
 
 impl Zf1SendResponseHandler {
-    unsafe extern "C" fn post_callback(
+    unsafe fn post_callback(
         exec_data: *mut ExecuteData,
         _retval: &mut ZVal,
         _exception: Option<&mut ZObj>
@@ -269,10 +269,12 @@ impl Handler for Zf1AdapterConnectHandler {
 }
 
 impl Zf1AdapterConnectHandler {
-    unsafe extern "C" fn pre_callback(exec_data: *mut ExecuteData) {
+    unsafe fn pre_callback(exec_data: *mut ExecuteData) {
         let tracer = tracer_provider::get_tracer_provider().tracer("php.otel.auto.zf1.db");
         let exec_data_ref = unsafe {&mut *exec_data};
-        let this_obj = exec_data_ref.get_this_mut().unwrap();
+        let Some(this_obj) = exec_data_ref.get_this_mut() else {
+            return;
+        };
 
         let connection = this_obj.get_property("_connection");
         tracing::debug!("Zf1AdapterConnectHandler: connection type: {:?}", connection.get_type_info());
@@ -286,8 +288,8 @@ impl Zf1AdapterConnectHandler {
             let span_name = "connect".to_string();
             let mut execute_attributes = vec![];
             let mut attributes = vec![];
-            if class_name.is_some() {
-                execute_attributes.push(KeyValue::new(SemConv::trace::DB_SYSTEM_NAME, map_adapter_class_to_db_system(&class_name.unwrap())));
+            if let Some(class_name) = class_name.as_deref() {
+                execute_attributes.push(KeyValue::new(SemConv::trace::DB_SYSTEM_NAME, map_adapter_class_to_db_system(class_name)));
             }
 
             let config = this_obj.get_property("_config");
@@ -308,7 +310,7 @@ impl Zf1AdapterConnectHandler {
             utils::start_and_activate_span(tracer, &span_name, attributes, exec_data, opentelemetry::trace::SpanKind::Client);
 
             let connection_id = get_object_id(this_obj);
-            CONNECTION_ATTRS.lock().unwrap().insert(connection_id, ConnectionInfo {
+            CONNECTION_ATTRS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(connection_id, ConnectionInfo {
                 attributes: execute_attributes.clone(),
                 span_context: opentelemetry::Context::current().span().span_context().clone(),
             });
@@ -316,7 +318,7 @@ impl Zf1AdapterConnectHandler {
         tracing::debug!("Zf1AdapterConnectHandler: should_start_span: {}", should_start_span);
         execute_data::set_exec_data_flag(exec_data, should_start_span);
     }
-    unsafe extern "C" fn post_callback(
+    unsafe fn post_callback(
         exec_data: *mut ExecuteData,
         _retval: &mut ZVal,
         exception: Option<&mut ZObj>
@@ -355,7 +357,7 @@ impl Handler for Zf1AdapterPrepareHandler {
 }
 
 impl Zf1AdapterPrepareHandler {
-    unsafe extern "C" fn pre_callback(exec_data: *mut ExecuteData) {
+    unsafe fn pre_callback(exec_data: *mut ExecuteData) {
         let tracer = tracer_provider::get_tracer_provider().tracer("php.otel.auto.zf1.db");
         let exec_data_ref = unsafe {&mut *exec_data};
         let mut span_name = "prepare".to_string();
@@ -375,7 +377,7 @@ impl Zf1AdapterPrepareHandler {
 
         utils::start_and_activate_span(tracer, &span_name, attributes, exec_data, opentelemetry::trace::SpanKind::Client);
     }
-    unsafe extern "C" fn post_callback(
+    unsafe fn post_callback(
         exec_data: *mut ExecuteData,
         retval: &mut ZVal,
         exception: Option<&mut ZObj>
@@ -391,7 +393,7 @@ impl Zf1AdapterPrepareHandler {
             if let Some(this_obj) = exec_data_ref.get_this_mut() {
                 let id = get_object_id(this_obj);
                 tracing::debug!("Zf1AdapterPrepareHandler: object id: {}", id);
-                if let Some(info) = CONNECTION_ATTRS.lock().unwrap().get(&id) {
+                if let Some(info) = CONNECTION_ATTRS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(&id) {
                     execute_attributes.extend_from_slice(&info.attributes);
                     let link = info.span_context.clone();
                     let ctx = opentelemetry::Context::current();
@@ -417,7 +419,7 @@ impl Zf1AdapterPrepareHandler {
                     let id = get_object_id(statement_obj);
                     // Add SQL query as an attribute
                     STATEMENT_ATTRS.lock()
-                        .unwrap()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .insert(
                             id,
                             StatementInfo{
@@ -454,7 +456,7 @@ impl Handler for Zf1StatementExecuteHandler {
 }
 
 impl Zf1StatementExecuteHandler {
-    unsafe extern "C" fn pre_callback(exec_data: *mut ExecuteData) {
+    unsafe fn pre_callback(exec_data: *mut ExecuteData) {
         let tracer = tracer_provider::get_tracer_provider().tracer("php.otel.auto.zf1.db");
         let exec_data_ref = unsafe { &mut *exec_data };
         let mut attributes = vec![];
@@ -464,7 +466,7 @@ impl Zf1StatementExecuteHandler {
         if let Some(this_obj) = exec_data_ref.get_this_mut() {
             let id = get_object_id(this_obj);
             tracing::debug!("Zf1StatementExecuteHandler: object id: {}", id);
-            if let Some(info) = STATEMENT_ATTRS.lock().unwrap().get(&id) {
+            if let Some(info) = STATEMENT_ATTRS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(&id) {
                 attributes.extend_from_slice(&info.attributes);
                 span_name = info.span_name.clone();
                 link = Some(info.span_context.clone());
@@ -472,13 +474,13 @@ impl Zf1StatementExecuteHandler {
         }
 
         utils::start_and_activate_span(tracer, &span_name, attributes, exec_data, opentelemetry::trace::SpanKind::Client);
-        if link.is_some() {
+        if let Some(link) = link {
             opentelemetry::Context::current()
                 .span()
-                .add_link(link.unwrap(), vec![]);
+                .add_link(link, vec![]);
         }
     }
-    unsafe extern "C" fn post_callback(
+    unsafe fn post_callback(
         exec_data: *mut ExecuteData,
         _retval: &mut ZVal,
         exception: Option<&mut ZObj>

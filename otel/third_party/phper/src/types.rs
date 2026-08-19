@@ -243,6 +243,47 @@ pub enum ArgumentTypeHint {
     Mixed,
     /// ClassEntry typehint (class, interface)
     ClassEntry(String),
+    /// Union typehint (php 8.0+): at most one `ClassEntry` member plus scalar
+    /// members, e.g. `Severity|int` or `float|int`.
+    Union(Vec<ArgumentTypeHint>),
+    /// `false` pseudo-type, only meaningful as a union member.
+    False,
+}
+
+impl ArgumentTypeHint {
+    /// Returns the `MAY_BE_*` mask for a scalar member of a union type.
+    pub(crate) fn may_be_mask(&self) -> Option<u32> {
+        match self {
+            Self::Null => Some(MAY_BE_NULL),
+            Self::Bool => Some(MAY_BE_BOOL),
+            Self::Int => Some(MAY_BE_LONG),
+            Self::Float => Some(MAY_BE_DOUBLE),
+            Self::String => Some(MAY_BE_STRING),
+            Self::Array => Some(MAY_BE_ARRAY),
+            Self::Object => Some(MAY_BE_OBJECT),
+            Self::Callable => Some(MAY_BE_CALLABLE),
+            Self::False => Some(MAY_BE_FALSE),
+            Self::Iterable | Self::Mixed | Self::ClassEntry(_) | Self::Union(_) => None,
+        }
+    }
+
+    /// Returns the Zend type constant for this type hint, if it maps to a
+    /// simple constant.
+    pub(crate) fn zend_type_const(&self) -> Option<u32> {
+        match self {
+            Self::Null => Some(IS_NULL),
+            Self::Bool => Some(_IS_BOOL),
+            Self::Int => Some(IS_LONG),
+            Self::Float => Some(IS_DOUBLE),
+            Self::String => Some(IS_STRING),
+            Self::Array => Some(IS_ARRAY),
+            Self::Object => Some(IS_OBJECT),
+            Self::Callable => Some(IS_CALLABLE),
+            Self::Iterable => Some(IS_ITERABLE),
+            Self::Mixed => Some(IS_MIXED),
+            Self::ClassEntry(_) | Self::Union(_) | Self::False => None,
+        }
+    }
 }
 
 /// PHP return typehints
@@ -274,4 +315,47 @@ pub enum ReturnTypeHint {
     Never,
     /// void typehint
     Void,
+    /// static typehint (php 8.0+)
+    Static,
+    /// Union typehint (php 8.0+): at most one `ClassEntry` member plus scalar
+    /// members.
+    Union(Vec<ReturnTypeHint>),
+}
+
+impl ReturnTypeHint {
+    /// Returns the `MAY_BE_*` mask for a scalar member of a union type.
+    pub(crate) fn may_be_mask(&self) -> Option<u32> {
+        match self {
+            Self::Null => Some(MAY_BE_NULL),
+            Self::Bool => Some(MAY_BE_BOOL),
+            Self::Int => Some(MAY_BE_LONG),
+            Self::Float => Some(MAY_BE_DOUBLE),
+            Self::String => Some(MAY_BE_STRING),
+            Self::Array => Some(MAY_BE_ARRAY),
+            Self::Object => Some(MAY_BE_OBJECT),
+            Self::Callable => Some(MAY_BE_CALLABLE),
+            Self::Static => Some(MAY_BE_STATIC),
+            Self::Void => Some(MAY_BE_VOID),
+            Self::Never => Some(MAY_BE_NEVER),
+            Self::Iterable | Self::Mixed | Self::ClassEntry(_) | Self::Union(_) => None,
+        }
+    }
+
+    /// Returns the Zend type constant for this type hint, if it maps to a
+    /// simple constant.
+    pub(crate) fn zend_type_const(&self) -> Option<u32> {
+        match self {
+            Self::Null => Some(IS_NULL),
+            Self::Bool => Some(_IS_BOOL),
+            Self::Int => Some(IS_LONG),
+            Self::Float => Some(IS_DOUBLE),
+            Self::String => Some(IS_STRING),
+            Self::Array => Some(IS_ARRAY),
+            Self::Object => Some(IS_OBJECT),
+            Self::Callable => Some(IS_CALLABLE),
+            Self::Iterable => Some(IS_ITERABLE),
+            Self::Mixed => Some(IS_MIXED),
+            Self::ClassEntry(_) | Self::Never | Self::Void | Self::Static | Self::Union(_) => None,
+        }
+    }
 }

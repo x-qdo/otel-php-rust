@@ -288,7 +288,10 @@ pub fn init_once() {
         };
     } else if exporter_name == "memory" {
         tracing::debug!("Using in-memory test exporter");
-        let exporter = MEMORY_EXPORTER.lock().unwrap().clone();
+        let exporter = MEMORY_EXPORTER
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
         builder = match add_exporter(
             builder,
             exporter,
@@ -535,7 +538,7 @@ pub fn make_tracer_provider_class(
     class
         .add_method("getTracer", Visibility::Public, move |_this, arguments| {
             let provider = get_tracer_provider();
-            let name = arguments[0].expect_z_str()?.to_str()?;
+            let name = util::arg(arguments, 0)?.expect_z_str()?.to_str()?;
             let mut object = tracer_class.init_object()?;
             if is_noop_provider(&provider) {
                 *object.as_mut_state() = None;

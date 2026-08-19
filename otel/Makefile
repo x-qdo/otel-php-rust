@@ -1,4 +1,4 @@
-.PHONY: all build test
+.PHONY: all build test lint
 .DEFAULT_GOAL: build
 EXTENSION_NAME = otel
 EXTENSION_FILE = target/release/lib${EXTENSION_NAME}.so
@@ -23,6 +23,11 @@ ri: build-test
 	php -d extension=target/debug/libotel.so --ri otel
 check:
 	cargo check
+# Panic-site gate: src/lib.rs denies unwrap/expect/panic/indexing on non-test
+# code, so any such site fails this target; --lib keeps cfg(test) off so the
+# lints are active. Other clippy warnings are reported but do not fail.
+lint:
+	cargo clippy --lib --features test
 install: build
 	@echo "Installing..."
 	cp ${EXTENSION_FILE} ${EXTENSION_INSTALL_PATH}

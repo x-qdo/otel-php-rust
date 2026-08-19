@@ -12,7 +12,8 @@
 
 use crate::{
     arrays::{ZArr, ZArray},
-    errors::ExpectTypeError,
+    classes::ClassEntry,
+    errors::{CallArgError, ExpectTypeError},
     functions::{ZFunc, call_internal},
     objects::{StateObject, ZObj, ZObject},
     references::ZRef,
@@ -177,17 +178,23 @@ impl ExecuteData {
 
     /// Gets associated `$this` object if exists.
     pub fn get_this(&mut self) -> Option<&ZObj> {
-        unsafe {
-            let val = ZVal::from_ptr(phper_get_this(&mut self.inner));
-            val.as_z_obj()
-        }
+        unsafe { ZVal::try_from_ptr(phper_get_this(&mut self.inner))?.as_z_obj() }
     }
 
     /// Gets associated mutable `$this` object if exists.
     pub fn get_this_mut(&mut self) -> Option<&mut ZObj> {
+        unsafe { ZVal::try_from_mut_ptr(phper_get_this(&mut self.inner))?.as_mut_z_obj() }
+    }
+
+    /// Gets associated called scope if it exists
+    pub fn get_called_scope(&mut self) -> Option<&ClassEntry> {
         unsafe {
-            let val = ZVal::from_mut_ptr(phper_get_this(&mut self.inner));
-            val.as_mut_z_obj()
+            let ptr = phper_get_called_scope(&mut self.inner);
+            if ptr.is_null() {
+                None
+            } else {
+                Some(ClassEntry::from_ptr(ptr))
+            }
         }
     }
 
@@ -206,6 +213,8 @@ impl ExecuteData {
     }
 
     /// Gets parameter by index.
+    ///
+    /// `index` is 0-based (the first parameter is at index 0).
     pub fn get_parameter(&self, index: usize) -> &ZVal {
         unsafe {
             let val = phper_zend_call_var_num(self.as_ptr() as *mut _, index.try_into().unwrap());
@@ -214,11 +223,74 @@ impl ExecuteData {
     }
 
     /// Gets mutable parameter by index.
+    ///
+    /// `index` is 0-based (the first parameter is at index 0).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `index >= num_args()`. Accessing a slot beyond the
+    /// actually-passed arguments would return an uninitialized `zval`.
     pub fn get_mut_parameter(&mut self, index: usize) -> &mut ZVal {
+        assert!(
+            index < self.num_args(),
+            "parameter index {index} out of bounds: num_args is {}",
+            self.num_args(),
+        );
         unsafe {
             let val = phper_zend_call_var_num(self.as_mut_ptr(), index.try_into().unwrap());
             ZVal::from_mut_ptr(val)
         }
+    }
+
+    /// Fills missing optional parameters with their default values.
+    ///
+    /// `defaults` is the full list of default values for **all** optional
+    /// parameters of the function. Already-provided optional arguments are
+    /// skipped automatically.
+    ///
+    /// `num_args` is updated to reflect the new count.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CallArgError`] if the total after filling would not match
+    /// `common_num_args()`.
+    pub fn materialize_missing(
+        &mut self, defaults: impl IntoIterator<Item = ZVal>,
+    ) -> crate::Result<()> {
+        let declared_len = self.common_num_args() as usize;
+        let required_len = self.common_required_num_args();
+        let passed_len = self.num_args();
+
+        if passed_len >= declared_len {
+            return Ok(());
+        }
+
+        let execute_data_ptr = self.as_mut_ptr();
+
+        let provided_optionals = passed_len.saturating_sub(required_len);
+        let mut i = passed_len;
+
+        for mut default in defaults.into_iter().skip(provided_optionals) {
+            if i >= declared_len {
+                return Err(CallArgError::new(i, declared_len).into());
+            }
+            unsafe {
+                phper_zend_init_call_arg(
+                    execute_data_ptr,
+                    i.try_into().unwrap(),
+                    default.as_mut_ptr(),
+                );
+            }
+            i += 1;
+        }
+
+        if i != declared_len {
+            return Err(CallArgError::new(i, declared_len).into());
+        }
+        unsafe {
+            phper_zend_set_call_num_args(execute_data_ptr, i.try_into().unwrap());
+        }
+        Ok(())
     }
 }
 
@@ -227,6 +299,133 @@ impl ExecuteData {
 pub struct ZVal {
     inner: zval,
     _p: PhantomData<*mut ()>,
+}
+
+/// Conversion from immutable [`ZVal`].
+pub trait FromZVal<'a>: Sized {
+    /// Converts from `ZVal`, return [`ExpectTypeError`] when type mismatch.
+    fn expect(val: &'a ZVal) -> crate::Result<Self>;
+}
+
+/// Conversion from mutable [`ZVal`].
+pub trait FromZValMut<'a>: Sized {
+    /// Converts from mutable `ZVal`, return [`ExpectTypeError`] when type
+    /// mismatch.
+    fn expect(val: &'a mut ZVal) -> crate::Result<Self>;
+}
+
+/// Borrowed value set converted from immutable [`ZVal`].
+#[derive(Debug)]
+pub enum ZValRef<'a> {
+    /// `null`
+    Null,
+    /// `bool`
+    Bool(bool),
+    /// `int`
+    Long(i64),
+    /// `float`
+    Double(f64),
+    /// `string`
+    Str(&'a ZStr),
+    /// `array`
+    Arr(&'a ZArr),
+    /// `object`
+    Obj(&'a ZObj),
+    /// `resource`
+    Res(&'a ZRes),
+    /// `reference`
+    Ref(&'a ZRef),
+}
+
+impl<'a> ZValRef<'a> {
+    /// Converts from immutable [`ZVal`].
+    #[inline]
+    pub fn from_z_val(val: &'a ZVal) -> crate::Result<Self> {
+        <Self as FromZVal>::expect(val)
+    }
+}
+
+impl<'a> FromZVal<'a> for ZValRef<'a> {
+    fn expect(val: &'a ZVal) -> crate::Result<Self> {
+        let t = val.get_type_info();
+
+        if t.is_null() {
+            Ok(Self::Null)
+        } else if t.is_bool() {
+            Ok(Self::Bool(val.expect_bool()?))
+        } else if t.is_long() {
+            Ok(Self::Long(val.expect_long()?))
+        } else if t.is_double() {
+            Ok(Self::Double(val.expect_double()?))
+        } else if t.is_string() {
+            Ok(Self::Str(val.expect_z_str()?))
+        } else if t.is_array() {
+            Ok(Self::Arr(val.expect_z_arr()?))
+        } else if t.is_object() {
+            Ok(Self::Obj(val.expect_z_obj()?))
+        } else if t.is_resource() {
+            Ok(Self::Res(val.expect_z_res()?))
+        } else if t.is_reference() {
+            Ok(Self::Ref(val.expect_z_ref()?))
+        } else {
+            Err(ExpectTypeError::new(TypeInfo::NULL, t).into())
+        }
+    }
+}
+
+/// Borrowed value set converted from mutable [`ZVal`].
+#[derive(Debug)]
+pub enum ZValMut<'a> {
+    /// `null`
+    Null,
+    /// `int`
+    Long(&'a mut i64),
+    /// `float`
+    Double(&'a mut f64),
+    /// `string`
+    Str(&'a mut ZStr),
+    /// `array`
+    Arr(&'a mut ZArr),
+    /// `object`
+    Obj(&'a mut ZObj),
+    /// `resource`
+    Res(&'a mut ZRes),
+    /// `reference`
+    Ref(&'a mut ZRef),
+}
+
+impl<'a> ZValMut<'a> {
+    /// Converts from mutable [`ZVal`].
+    #[inline]
+    pub fn from_z_val_mut(val: &'a mut ZVal) -> crate::Result<Self> {
+        <Self as FromZValMut>::expect(val)
+    }
+}
+
+impl<'a> FromZValMut<'a> for ZValMut<'a> {
+    fn expect(val: &'a mut ZVal) -> crate::Result<Self> {
+        let t = val.get_type_info();
+
+        if t.is_null() {
+            Ok(Self::Null)
+        } else if t.is_long() {
+            Ok(Self::Long(val.expect_mut_long()?))
+        } else if t.is_double() {
+            Ok(Self::Double(val.expect_mut_double()?))
+        } else if t.is_string() {
+            Ok(Self::Str(val.expect_mut_z_str()?))
+        } else if t.is_array() {
+            Ok(Self::Arr(val.expect_mut_z_arr()?))
+        } else if t.is_object() {
+            Ok(Self::Obj(val.expect_mut_z_obj()?))
+        } else if t.is_resource() {
+            Ok(Self::Res(val.expect_mut_z_res()?))
+        } else if t.is_reference() {
+            Ok(Self::Ref(val.expect_mut_z_ref()?))
+        } else {
+            Err(ExpectTypeError::new(TypeInfo::LONG, t).into())
+        }
+    }
 }
 
 impl ZVal {
@@ -299,6 +498,36 @@ impl ZVal {
     pub fn get_type_info(&self) -> TypeInfo {
         let t = unsafe { phper_z_type_info_p(self.as_ptr()) };
         t.into()
+    }
+
+    /// Converts to target type by [`FromZVal`], otherwise returns
+    /// [`ExpectTypeError`].
+    pub fn expect_type<'a, T>(&'a self) -> crate::Result<T>
+    where
+        T: FromZVal<'a>,
+    {
+        T::expect(self)
+    }
+
+    /// Converts to target mutable type by [`FromZValMut`], otherwise returns
+    /// [`ExpectTypeError`].
+    pub fn expect_mut_type<'a, T>(&'a mut self) -> crate::Result<T>
+    where
+        T: FromZValMut<'a>,
+    {
+        T::expect(self)
+    }
+
+    /// Converts current [`ZVal`] to borrowed [`ZValRef`].
+    #[inline]
+    pub fn to_value(&self) -> crate::Result<ZValRef<'_>> {
+        ZValRef::from_z_val(self)
+    }
+
+    /// Converts current mutable [`ZVal`] to borrowed [`ZValMut`].
+    #[inline]
+    pub fn to_value_mut(&mut self) -> crate::Result<ZValMut<'_>> {
+        ZValMut::from_z_val_mut(self)
     }
 
     /// Converts to null if `ZVal` is null.
@@ -423,6 +652,24 @@ impl ZVal {
     /// [`ExpectTypeError`].
     pub fn expect_z_str(&self) -> crate::Result<&ZStr> {
         self.inner_expect_z_str().map(|x| &*x)
+    }
+
+    /// Converts to bytes if `ZVal` is string, otherwise returns
+    /// [`ExpectTypeError`].
+    pub fn expect_bytes(&self) -> crate::Result<&[u8]> {
+        self.expect_z_str().map(ZStr::to_bytes)
+    }
+
+    /// Converts to str if `ZVal` is string and valid UTF-8, otherwise returns
+    /// error.
+    pub fn expect_str(&self) -> crate::Result<&str> {
+        Ok(self.expect_z_str()?.to_str()?)
+    }
+
+    /// Converts to CStr if `ZVal` is string and contains a valid trailing nul,
+    /// otherwise returns error.
+    pub fn expect_c_str(&self) -> crate::Result<&CStr> {
+        Ok(self.expect_z_str()?.to_c_str()?)
     }
 
     /// Converts to mutable string if `ZVal` is string.
@@ -649,6 +896,156 @@ impl Debug for ZVal {
         }
 
         d.finish()
+    }
+}
+
+impl<'a> FromZVal<'a> for () {
+    fn expect(val: &'a ZVal) -> crate::Result<Self> {
+        val.expect_null()
+    }
+}
+
+impl<'a> FromZVal<'a> for bool {
+    fn expect(val: &'a ZVal) -> crate::Result<Self> {
+        val.expect_bool()
+    }
+}
+
+impl<'a> FromZVal<'a> for &'a ZVal {
+    fn expect(val: &'a ZVal) -> crate::Result<Self> {
+        Ok(val)
+    }
+}
+
+impl<'a> FromZValMut<'a> for &'a ZVal {
+    fn expect(val: &'a mut ZVal) -> crate::Result<Self> {
+        Ok(val)
+    }
+}
+
+impl<'a> FromZValMut<'a> for &'a mut ZVal {
+    fn expect(val: &'a mut ZVal) -> crate::Result<Self> {
+        Ok(val)
+    }
+}
+
+impl<'a> FromZVal<'a> for i64 {
+    fn expect(val: &'a ZVal) -> crate::Result<Self> {
+        val.expect_long()
+    }
+}
+
+impl<'a> FromZValMut<'a> for &'a mut i64 {
+    fn expect(val: &'a mut ZVal) -> crate::Result<Self> {
+        val.expect_mut_long()
+    }
+}
+
+impl<'a> FromZVal<'a> for f64 {
+    fn expect(val: &'a ZVal) -> crate::Result<Self> {
+        val.expect_double()
+    }
+}
+
+impl<'a> FromZValMut<'a> for &'a mut f64 {
+    fn expect(val: &'a mut ZVal) -> crate::Result<Self> {
+        val.expect_mut_double()
+    }
+}
+
+impl<'a> FromZVal<'a> for &'a ZStr {
+    fn expect(val: &'a ZVal) -> crate::Result<Self> {
+        val.expect_z_str()
+    }
+}
+
+impl<'a> FromZVal<'a> for &'a [u8] {
+    fn expect(val: &'a ZVal) -> crate::Result<Self> {
+        val.expect_bytes()
+    }
+}
+
+impl<'a> FromZValMut<'a> for &'a [u8] {
+    fn expect(val: &'a mut ZVal) -> crate::Result<Self> {
+        val.expect_mut_z_str().map(|s| s.to_bytes())
+    }
+}
+
+impl<'a> FromZVal<'a> for &'a str {
+    fn expect(val: &'a ZVal) -> crate::Result<Self> {
+        val.expect_str()
+    }
+}
+
+impl<'a> FromZValMut<'a> for &'a str {
+    fn expect(val: &'a mut ZVal) -> crate::Result<Self> {
+        Ok(val.expect_mut_z_str()?.to_str()?)
+    }
+}
+
+impl<'a> FromZVal<'a> for &'a CStr {
+    fn expect(val: &'a ZVal) -> crate::Result<Self> {
+        val.expect_c_str()
+    }
+}
+
+impl<'a> FromZValMut<'a> for &'a CStr {
+    fn expect(val: &'a mut ZVal) -> crate::Result<Self> {
+        Ok(val.expect_mut_z_str()?.to_c_str()?)
+    }
+}
+
+impl<'a> FromZValMut<'a> for &'a mut ZStr {
+    fn expect(val: &'a mut ZVal) -> crate::Result<Self> {
+        val.expect_mut_z_str()
+    }
+}
+
+impl<'a> FromZVal<'a> for &'a ZArr {
+    fn expect(val: &'a ZVal) -> crate::Result<Self> {
+        val.expect_z_arr()
+    }
+}
+
+impl<'a> FromZValMut<'a> for &'a mut ZArr {
+    fn expect(val: &'a mut ZVal) -> crate::Result<Self> {
+        val.expect_mut_z_arr()
+    }
+}
+
+impl<'a> FromZVal<'a> for &'a ZObj {
+    fn expect(val: &'a ZVal) -> crate::Result<Self> {
+        val.expect_z_obj()
+    }
+}
+
+impl<'a> FromZValMut<'a> for &'a mut ZObj {
+    fn expect(val: &'a mut ZVal) -> crate::Result<Self> {
+        val.expect_mut_z_obj()
+    }
+}
+
+impl<'a> FromZVal<'a> for &'a ZRes {
+    fn expect(val: &'a ZVal) -> crate::Result<Self> {
+        val.expect_z_res()
+    }
+}
+
+impl<'a> FromZValMut<'a> for &'a mut ZRes {
+    fn expect(val: &'a mut ZVal) -> crate::Result<Self> {
+        val.expect_mut_z_res()
+    }
+}
+
+impl<'a> FromZVal<'a> for &'a ZRef {
+    fn expect(val: &'a ZVal) -> crate::Result<Self> {
+        val.expect_z_ref()
+    }
+}
+
+impl<'a> FromZValMut<'a> for &'a mut ZRef {
+    fn expect(val: &'a mut ZVal) -> crate::Result<Self> {
+        val.expect_mut_z_ref()
     }
 }
 

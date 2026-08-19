@@ -48,7 +48,9 @@ fn get_logger_provider_key() -> (u32, String) {
 
 pub fn init_once() {
     let key = get_logger_provider_key();
-    let mut providers = LOGGER_PROVIDERS.lock().unwrap();
+    let mut providers = LOGGER_PROVIDERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if providers.contains_key(&key) {
         tracing::debug!("logger provider already exists for key {:?}", key);
         return;
@@ -102,7 +104,10 @@ pub fn init_once() {
             builder = builder.with_log_processor(batch);
         }
     } else if exporter_type == "memory" {
-        let exporter = MEMORY_EXPORTER.lock().unwrap().clone();
+        let exporter = MEMORY_EXPORTER
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
         if use_simple {
             tracing::debug!("Using Simple log processor with in-memory exporter");
             builder = builder.with_log_processor(SimpleLogProcessor::new(exporter));
@@ -191,7 +196,9 @@ pub fn get_logger_provider() -> Arc<SdkLoggerProvider> {
         );
         return NOOP_LOGGER_PROVIDER.clone();
     }
-    let providers = LOGGER_PROVIDERS.lock().unwrap();
+    let providers = LOGGER_PROVIDERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let key = get_logger_provider_key();
     if let Some(provider) = providers.get(&key) {
         return provider.clone();
@@ -206,7 +213,9 @@ pub fn get_logger_provider() -> Arc<SdkLoggerProvider> {
 
 pub fn shutdown() {
     let pid = process::id();
-    let mut providers = LOGGER_PROVIDERS.lock().unwrap();
+    let mut providers = LOGGER_PROVIDERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let keys_to_remove: Vec<_> = providers
         .keys()
         .filter(|(k_pid, _)| *k_pid == pid)
@@ -238,7 +247,7 @@ pub fn make_logger_provider_class(
     class
         .add_method("getLogger", Visibility::Public, move |_this, arguments| {
             let provider = get_logger_provider();
-            let name = arguments[0].expect_z_str()?.to_str()?.to_string();
+            let name = util::arg(arguments, 0)?.expect_z_str()?.to_str()?.to_string();
 
             let version = arguments
                 .get(1)

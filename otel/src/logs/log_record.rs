@@ -138,12 +138,12 @@ pub fn make_log_record_class() -> ClassEntity<LogRecordState> {
             }
             Ok::<_, phper::Error>(())
         })
-        .argument(phper::functions::Argument::new("body").optional().with_default_value("").with_type_hint(phper::types::ArgumentTypeHint::String));
+        .argument(phper::functions::Argument::new("body").optional().with_default_value("''").with_type_hint(phper::types::ArgumentTypeHint::String));
 
     class
         .add_method("setTimestamp", Visibility::Public, |this, arguments| {
             // Accept nanoseconds since UNIX_EPOCH as int
-            let ts_zval = &arguments[0];
+            let ts_zval = crate::util::arg(arguments, 0)?;
             let nanos: u64 = ts_zval.expect_long()? as u64;
             let system_time = std::time::UNIX_EPOCH
                 + std::time::Duration::from_secs(nanos / 1_000_000_000)
@@ -156,7 +156,7 @@ pub fn make_log_record_class() -> ClassEntity<LogRecordState> {
 
     class
         .add_method("setSeverityNumber", Visibility::Public, |this, arguments| {
-            let severity = arguments[0].expect_long()? as u8;
+            let severity = crate::util::arg(arguments, 0)?.expect_long()? as u8;
             let sev = match severity {
                 1 => Severity::Trace,
                 2 => Severity::Trace2,
@@ -191,7 +191,7 @@ pub fn make_log_record_class() -> ClassEntity<LogRecordState> {
 
     class
         .add_method("setBody", Visibility::Public, |this, arguments| {
-            let body_zval = &arguments[0];
+            let body_zval = crate::util::arg(arguments, 0)?;
             let body_any = if let Ok(s) = body_zval.expect_z_str() {
                 // Convert to owned String immediately to avoid lifetime issues
                 AnyValue::String(s.to_str()?.to_owned().into())
@@ -213,7 +213,7 @@ pub fn make_log_record_class() -> ClassEntity<LogRecordState> {
 
     class
         .add_method("setSeverityText", Visibility::Public, |this, arguments| {
-            let text = arguments[0].expect_z_str()?.to_str()?.to_owned();
+            let text = crate::util::arg(arguments, 0)?.expect_z_str()?.to_str()?.to_owned();
             this.as_mut_state().severity_text = Some(text);
 
             Ok::<_, phper::Error>(this.to_ref_owned())
@@ -223,8 +223,8 @@ pub fn make_log_record_class() -> ClassEntity<LogRecordState> {
     class
         .add_method("setAttribute", Visibility::Public, |this, arguments| {
             let state = this.as_mut_state();
-            let key = arguments[0].expect_z_str()?.to_str()?.to_string();
-            let value_zval = &arguments[1];
+            let key = crate::util::arg(arguments, 0)?.expect_z_str()?.to_str()?.to_string();
+            let value_zval = crate::util::arg(arguments, 1)?;
             insert_attribute(state, key, value_zval)?;
             Ok::<_, phper::Error>(this.to_ref_owned())
         })
@@ -234,7 +234,7 @@ pub fn make_log_record_class() -> ClassEntity<LogRecordState> {
     class
         .add_method("setAttributes", Visibility::Public, |this, arguments| {
             let state = this.as_mut_state();
-            let attrs_zval = &arguments[0];
+            let attrs_zval = crate::util::arg(arguments, 0)?;
             let attrs_arr = attrs_zval.expect_z_arr()?;
             for (k, v) in attrs_arr.iter() {
                 // Support both string and integer keys
@@ -250,7 +250,7 @@ pub fn make_log_record_class() -> ClassEntity<LogRecordState> {
 
     class
         .add_method("setEventName", Visibility::Public, |this, arguments| {
-            let name = arguments[0].expect_z_str()?.to_str()?.to_owned();
+            let name = crate::util::arg(arguments, 0)?.expect_z_str()?.to_str()?.to_owned();
             this.as_mut_state().event_name = Some(name);
             Ok::<_, phper::Error>(this.to_ref_owned())
         })

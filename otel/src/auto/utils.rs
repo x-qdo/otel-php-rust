@@ -17,13 +17,32 @@ use phper::{
     objects::ZObj,
 };
 use regex::Regex;
+use std::sync::LazyLock;
+
+// Literal patterns compiled once per process; a pattern that fails to compile
+// disables SQL span naming instead of panicking on a request thread.
+static SQL_REGEXES: LazyLock<Option<SqlRegexes>> = LazyLock::new(|| {
+    Some(SqlRegexes {
+        select: Regex::new(r#"(?si)^\s*(SELECT)\b.*?\bFROM\b(.*)"#).ok()?,
+        insert: Regex::new(r#"(?si)^\s*(INSERT)\s+INTO\s+([`"a-zA-Z0-9_\.]+)"#).ok()?,
+        update: Regex::new(r#"(?si)^\s*(UPDATE)\s+([`"a-zA-Z0-9_\.]+)"#).ok()?,
+        delete: Regex::new(r#"(?si)^\s*(DELETE)\s+FROM\s+([`"a-zA-Z0-9_\.]+)"#).ok()?,
+        table: Regex::new(r#"^[`"a-zA-Z0-9_\.]+"#).ok()?,
+    })
+});
+
+struct SqlRegexes {
+    select: Regex,
+    insert: Regex,
+    update: Regex,
+    delete: Regex,
+    table: Regex,
+}
 
 pub fn extract_span_name_from_sql(sql: &str) -> Option<String> {
     let sql = sql.trim();
-    let select_re = Regex::new(r#"(?si)^\s*(SELECT)\b.*?\bFROM\b(.*)"#).unwrap();
-    let insert_re = Regex::new(r#"(?si)^\s*(INSERT)\s+INTO\s+([`"a-zA-Z0-9_\.]+)"#).unwrap();
-    let update_re = Regex::new(r#"(?si)^\s*(UPDATE)\s+([`"a-zA-Z0-9_\.]+)"#).unwrap();
-    let delete_re = Regex::new(r#"(?si)^\s*(DELETE)\s+FROM\s+([`"a-zA-Z0-9_\.]+)"#).unwrap();
+    let SqlRegexes { select: select_re, insert: insert_re, update: update_re, delete: delete_re, table: table_re } =
+        SQL_REGEXES.as_ref()?;
 
     if let Some(caps) = select_re.captures(sql) {
         let after_from = caps.get(2).map(|m| m.as_str().trim_start());
@@ -33,7 +52,6 @@ pub fn extract_span_name_from_sql(sql: &str) -> Option<String> {
                 return Some("SELECT".to_string());
             }
             // Otherwise, match the table name
-            let table_re = Regex::new(r#"^[`"a-zA-Z0-9_\.]+"#).unwrap();
             if let Some(table_caps) = table_re.captures(after_from) {
                 let table = table_caps.get(0).map(|m| m.as_str().replace(['"', '`'], ""));
                 return table.map(|t| format!("SELECT {}", t));
@@ -65,14 +83,19 @@ pub fn record_exception(context: &opentelemetry::Context, exception: &mut ZObj) 
     context.span().set_status(opentelemetry::trace::Status::error(message));
 }
 
-pub fn start_and_activate_span(
+// Crate-private: callers are the observer/execute hooks, which hand over the
+// engine's live execute_data pointer for the duration of the call.
+pub(crate) fn start_and_activate_span(
     tracer: SdkTracer,
     span_name: &str,
     attributes: Vec<KeyValue>,
     exec_data: *mut ExecuteData,
     span_kind: SpanKind,
 ) {
-    let mut merged_attributes = get_default_attributes(unsafe { &*exec_data });
+    let Some(exec_data_ref) = (unsafe { exec_data.as_ref() }) else {
+        return;
+    };
+    let mut merged_attributes = get_default_attributes(exec_data_ref);
     merged_attributes.extend(attributes);
     let span_builder = tracer.span_builder(span_name.to_string())
         .with_kind(span_kind)

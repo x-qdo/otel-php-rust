@@ -30,6 +30,7 @@ use std::{
     marker::PhantomData,
     mem::{ManuallyDrop, replace, size_of, transmute, zeroed},
     os::raw::c_int,
+    panic::{AssertUnwindSafe, catch_unwind},
     ptr::{self, null, null_mut},
     rc::Rc,
     slice,
@@ -231,7 +232,7 @@ fn find_global_class_entry_ptr(name: impl AsRef<str>) -> *mut zend_class_entry {
     let name = name.to_lowercase();
     unsafe {
         phper_zend_hash_str_find_ptr(
-            compiler_globals.class_table,
+            crate::cg!(class_table),
             name.as_ptr().cast(),
             name.len().try_into().unwrap(),
         )
@@ -464,6 +465,7 @@ pub struct ClassEntity<T: 'static> {
     constants: Vec<ConstantEntity>,
     bound_class: StateClass<T>,
     state_cloner: Option<Rc<StateCloner>>,
+    ce_flags: u32,
     _p: PhantomData<(*mut (), T)>,
 }
 
@@ -502,8 +504,19 @@ impl<T: 'static> ClassEntity<T> {
             constants: Vec::new(),
             bound_class: StateClass::null(),
             state_cloner: None,
+            ce_flags: 0,
             _p: PhantomData,
         }
+    }
+
+    /// Declare the class `final`.
+    pub fn set_final(&mut self) {
+        self.ce_flags |= ZEND_ACC_FINAL;
+    }
+
+    /// Declare the class `abstract`.
+    pub fn set_abstract(&mut self) {
+        self.ce_flags |= ZEND_ACC_EXPLICIT_ABSTRACT_CLASS;
     }
 
     /// Add member method to class, with visibility and method handler.
@@ -700,6 +713,10 @@ impl<T: 'static> ClassEntity<T> {
             );
 
             self.bound_class.bind(class_ce);
+
+            // Registration copies ce_flags, so flags set on the registered
+            // entry are honoured by inheritance and instantiation checks.
+            (*class_ce).ce_flags |= self.ce_flags;
 
             for interface in &self.interfaces {
                 let interface_ce = interface.as_class_entry().as_ptr();
@@ -1101,28 +1118,27 @@ pub(crate) unsafe extern "C" fn create_object(ce: *mut zend_class_entry) -> *mut
         // because Zend owns the object but does not own its handlers table.
         (*object).handlers = state_object_handlers(has_state_cloner);
 
-        // Call the state constructor and store the state.
-        let data = (state_constructor)();
+        // Call the state constructor and store the state. The object is already
+        // allocated and registered with the engine, so it must be returned even
+        // when the constructor panics: it then carries a null state (every
+        // accessor reports that instead of reading freed memory) and the panic
+        // is rethrown as a pending PHP `\Error`, so `new` throws.
+        let data = match catch_unwind(AssertUnwindSafe(|| (state_constructor)())) {
+            Ok(data) => data,
+            Err(payload) => {
+                crate::errors::throw_panic(payload);
+                null_any_state()
+            }
+        };
         *state_object.as_mut_any_state() = data;
 
         object
     }
 }
 
-unsafe fn state_object_handlers(has_state_cloner: bool) -> *const zend_object_handlers {
-    let handlers = if has_state_cloner {
-        &CLONEABLE_STATE_OBJECT_HANDLERS
-    } else {
-        &STATE_OBJECT_HANDLERS
-    };
-
-    *handlers.get_or_init(|| {
-        let mut handlers = Box::new(unsafe { std_object_handlers });
-        handlers.offset = StateObj::<()>::offset() as c_int;
-        handlers.free_obj = Some(free_object);
-        handlers.clone_obj = has_state_cloner.then_some(clone_object);
-        Box::into_raw(handlers) as usize
-    }) as *const zend_object_handlers
+/// A null state pointer; see [`create_object`].
+pub(crate) fn null_any_state() -> *mut dyn Any {
+    null_mut::<()>() as *mut dyn Any
 }
 
 #[cfg(phper_major_version = "8")]
@@ -1169,9 +1185,18 @@ unsafe fn clone_object_common(object: *mut zend_object) -> *mut zend_object {
         // Set handlers
         (*new_object).handlers = (*object).handlers;
 
-        // Call the state cloner and store the state.
+        // Call the state cloner and store the state; a panicking cloner leaves
+        // the clone with a null state and a pending PHP `\Error`, like
+        // `create_object`.
         let state_object = StateObj::<()>::from_mut_object_ptr(object);
-        let data = (state_cloner)(*state_object.as_mut_any_state());
+        let source_state = *state_object.as_mut_any_state();
+        let data = match catch_unwind(AssertUnwindSafe(|| (state_cloner)(source_state))) {
+            Ok(data) => data,
+            Err(payload) => {
+                crate::errors::throw_panic(payload);
+                null_any_state()
+            }
+        };
         *new_state_object.as_mut_any_state() = data;
 
         new_object
@@ -1225,12 +1250,29 @@ unsafe extern "C" fn free_object(object: *mut zend_object) {
     unsafe {
         let state_object = StateObj::<()>::from_mut_object_ptr(object);
 
-        // Drop the state.
-        state_object.drop_state();
+        // Drop the state. A panicking `Drop` must not unwind into the engine;
+        // the state is leaked instead and the object is still destroyed.
+        let _ = catch_unwind(AssertUnwindSafe(|| state_object.drop_state()));
 
         // Original destroy call.
         zend_object_std_dtor(object);
     }
+}
+
+unsafe fn state_object_handlers(has_state_cloner: bool) -> *const zend_object_handlers {
+    let handlers = if has_state_cloner {
+        &CLONEABLE_STATE_OBJECT_HANDLERS
+    } else {
+        &STATE_OBJECT_HANDLERS
+    };
+
+    *handlers.get_or_init(|| {
+        let mut handlers = Box::new(unsafe { std_object_handlers });
+        handlers.offset = StateObj::<()>::offset() as c_int;
+        handlers.free_obj = Some(free_object);
+        handlers.clone_obj = has_state_cloner.then_some(clone_object);
+        Box::into_raw(handlers) as usize
+    }) as *const zend_object_handlers
 }
 
 /// Find the class that registered by phper.

@@ -112,7 +112,7 @@ pub fn make_non_recording_span_class(
     });
 
     class.add_method("storeInContext", Visibility::Public, move |_, arguments| {
-        let context_obj: &mut ZObj = arguments[0].expect_mut_z_obj()?;
+        let context_obj: &mut ZObj = crate::util::arg_mut(arguments, 0)?.expect_mut_z_obj()?;
         let parent = storage::resolve_context(get_instance_id(context_obj));
         let context = Arc::new(parent.with_span(NoopSpan::DEFAULT));
         let instance_id = storage::store_context_instance(context.clone());
@@ -124,7 +124,7 @@ pub fn make_non_recording_span_class(
     });
 
     class.add_static_method("fromContext", Visibility::Public, move |arguments| {
-        span_object_from_context(&span_class, arguments[0].expect_mut_z_obj()?)
+        span_object_from_context(&span_class, crate::util::arg_mut(arguments, 0)?.expect_mut_z_obj()?)
     });
 
     class

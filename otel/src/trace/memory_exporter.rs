@@ -26,7 +26,9 @@ pub fn make_memory_exporter_class() -> ClassEntity<()> {
     });
 
     class.add_static_method("count", Visibility::Public, |_| {
-        let exporter = MEMORY_EXPORTER.lock().unwrap();
+        let exporter = MEMORY_EXPORTER
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let spans_count = exporter.get_finished_spans().map(|spans| spans.len()).unwrap_or(0);
         Ok::<_, Infallible>(spans_count as i64)
     })
@@ -34,7 +36,9 @@ pub fn make_memory_exporter_class() -> ClassEntity<()> {
 
     class.add_static_method("getSpans", Visibility::Public, |_| {
         let mut result = ZArray::new();
-        let exporter = MEMORY_EXPORTER.lock().unwrap();
+        let exporter = MEMORY_EXPORTER
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let spans = exporter.get_finished_spans().unwrap_or_default();
         for (_i, span) in spans.iter().enumerate() {
             let mut arr = ZArray::new();
@@ -47,9 +51,9 @@ pub fn make_memory_exporter_class() -> ClassEntity<()> {
             arr.insert("span_context", span_context);
             arr.insert("parent_span_id", span.parent_span_id.to_string());
             arr.insert("span_kind", format!("{:?}", span.span_kind));
-            let start_time = span.start_time.duration_since(std::time::UNIX_EPOCH).unwrap().as_micros();
+            let start_time = span.start_time.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_micros();
             arr.insert("start_time", start_time as i64);
-            let end_time = span.end_time.duration_since(std::time::UNIX_EPOCH).unwrap().as_micros();
+            let end_time = span.end_time.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_micros();
             arr.insert("end_time", end_time as i64);
             let mut scope = ZArray::new();
             scope.insert("name", &*span.instrumentation_scope.name());
@@ -119,7 +123,7 @@ pub fn make_memory_exporter_class() -> ClassEntity<()> {
             for event in span.events.clone() {
                 let mut event_arr = ZArray::new();
                 event_arr.insert("name", &*event.name);
-                let timestamp = event.timestamp.duration_since(std::time::UNIX_EPOCH).unwrap().as_micros();
+                let timestamp = event.timestamp.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_micros();
                 event_arr.insert("timestamp", timestamp as i64);
 
                 let mut event_attributes = ZArray::new();
@@ -193,7 +197,9 @@ pub fn make_memory_exporter_class() -> ClassEntity<()> {
         .return_type(ReturnType::new(ReturnTypeHint::Array));
 
     class.add_static_method("reset", Visibility::Public, |_| {
-        let exporter = MEMORY_EXPORTER.lock().unwrap();
+        let exporter = MEMORY_EXPORTER
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         exporter.reset();
         Ok::<_, Infallible>(())
     })

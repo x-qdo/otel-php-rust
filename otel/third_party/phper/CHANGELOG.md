@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.5](https://github.com/phper-framework/phper/compare/phper-v0.17.4...phper-v0.17.5) - 2026-06-26
+
+### Other
+
+- simplify materialize_missing to accept full defaults list ([#241](https://github.com/phper-framework/phper/pull/241))
+
+## [0.17.4](https://github.com/phper-framework/phper/compare/phper-v0.17.3...phper-v0.17.4) - 2026-06-25
+
+### Added
+
+- add materialize_missing for optional parameters ([#239](https://github.com/phper-framework/phper/pull/239))
+
+## [0.17.3](https://github.com/phper-framework/phper/compare/phper-v0.17.2...phper-v0.17.3) - 2026-06-23
+
+### Added
+
+- Enhance CI configuration with debug options for PHP versions ([#236](https://github.com/phper-framework/phper/pull/236))
+- Add documentation attributes for global macros ([#233](https://github.com/phper-framework/phper/pull/233))
+- Add ZValRef and ZValMut enums ([#232](https://github.com/phper-framework/phper/pull/232))
+- Implement conversion traits for ZVal ([#231](https://github.com/phper-framework/phper/pull/231))
+- Update configuration for PHP 8.1+ enum support and adjust linting ([#227](https://github.com/phper-framework/phper/pull/227))
+
+### Other
+
+- Refactor type hints, improve CI workflows, and enhance safety comments ([#237](https://github.com/phper-framework/phper/pull/237))
+- Implements more elements for FromZVal/FromZValMut ([#234](https://github.com/phper-framework/phper/pull/234))
+- Update README ([#230](https://github.com/phper-framework/phper/pull/230))
+- Add ZTS Support ([#229](https://github.com/phper-framework/phper/pull/229))
+
+## [0.17.2](https://github.com/phper-framework/phper/compare/phper-v0.17.1...phper-v0.17.2) - 2025-12-08
+
+### Other
+
+- Adds 8.5 ([#225](https://github.com/phper-framework/phper/pull/225))
+
+## [0.17.1](https://github.com/phper-framework/phper/compare/phper-v0.17.0...phper-v0.17.1) - 2025-10-09
+
+### Fixed
+
+- Update feature attribute for documentation configuration ([#224](https://github.com/phper-framework/phper/pull/224))
+- fix invocation of functions with type hint ([#220](https://github.com/phper-framework/phper/pull/220))
+
+### Other
+
+- adding functions for interacting with execution context ([#221](https://github.com/phper-framework/phper/pull/221))
+- adding function start and end line number ([#219](https://github.com/phper-framework/phper/pull/219))
+- provide access to return_value, function's type, filename, line number ([#217](https://github.com/phper-framework/phper/pull/217))
+
 ## [0.17.0](https://github.com/phper-framework/phper/compare/phper-v0.16.1...phper-v0.17.0) - 2025-07-03
 
 ### Added

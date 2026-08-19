@@ -48,6 +48,8 @@ pub fn on_request_init() {
     if module::is_disabled() {
         return;
     }
+    #[cfg(feature = "test")]
+    crate::panic::probes::panic_at("rinit");
     jit_initialization();
     logging::init_once();
     tracing::debug!("OpenTelemetry::RINIT");
@@ -73,11 +75,15 @@ pub fn on_request_shutdown() {
     if module::is_disabled() {
         return;
     }
+    #[cfg(feature = "test")]
+    crate::panic::probes::panic_at("rshutdown");
     tracing::debug!("OpenTelemetry::RSHUTDOWN");
     shutdown();
     tracer_provider::end_request();
     if let Some(plugin_manager) = auto::plugin_manager::get_global() {
-        let pm = plugin_manager.read().expect("Failed to acquire read lock");
+        let pm = plugin_manager
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         pm.request_shutdown();
     }
 }
@@ -311,7 +317,7 @@ fn is_excluded_url(uri: &str) -> bool {
                                     break;
                                 }
                             } else {
-                                if let Some(idx) = uri[pos..].find(*part) {
+                                if let Some(idx) = uri.get(pos..).and_then(|rest| rest.find(*part)) {
                                     pos += idx + part.len();
                                 } else {
                                     matched = false;
@@ -405,17 +411,13 @@ fn init() {
 fn shutdown() {
     restore_env();
     let context_id = OTEL_CONTEXT_ID.with(|cell| cell.borrow_mut().take());
-    let is_tracing = context_id.is_some();
-    if is_tracing {
-        let context_id = context_id.unwrap();
+    if let Some(context_id) = context_id {
         let is_http_request = get_sapi_module_name() != "cli";
         tracing::debug!("RSHUTDOWN::auto-closing root span...");
-        let ctx = storage::get_context_instance(Some(context_id));
-        if ctx.is_none() {
+        let Some(ctx) = storage::get_context_instance(Some(context_id)) else {
             tracing::warn!("RSHUTDOWN::no context found for id {}", context_id);
             return;
-        }
-        let ctx = ctx.unwrap();
+        };
         let span = ctx.span();
         if span.span_context().is_valid() {
             if is_http_request {
@@ -594,13 +596,20 @@ fn backup_env() {
         .filter(|(k, _)| k.starts_with("OTEL_"))
         .collect::<HashMap<_, _>>();
     let pid = std::process::id();
-    ENV_BACKUP.lock().unwrap().insert(pid, env);
+    ENV_BACKUP
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(pid, env);
 }
 
 fn restore_env() {
     tracing::debug!("Restoring environment variables from backup");
     let pid = std::process::id();
-    if let Some(backup) = ENV_BACKUP.lock().unwrap().remove(&pid) {
+    let backup = ENV_BACKUP
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&pid);
+    if let Some(backup) = backup {
         // Remove any new env vars not in the backup
         for (k, _) in env::vars() {
             if !backup.contains_key(&k) && k.starts_with("OTEL_") {

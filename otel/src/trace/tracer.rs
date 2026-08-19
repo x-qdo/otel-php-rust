@@ -36,7 +36,7 @@ pub fn make_tracer_class(
 
     class
         .add_method("spanBuilder", Visibility::Public, move |this, arguments| {
-            let name = arguments[0].expect_z_str()?.to_str()?;
+            let name = crate::util::arg(arguments, 0)?.expect_z_str()?.to_str()?;
             let mut object = span_builder_class.init_object()?;
             // A tracer from the no-op provider keeps the builder stateless so
             // the disabled path never copies names or touches the SDK.

@@ -29,7 +29,9 @@ pub fn make_logs_memory_exporter_class() -> ClassEntity<()> {
     });
 
     class.add_static_method("count", Visibility::Public, |_| {
-        let exporter = MEMORY_EXPORTER.lock().unwrap();
+        let exporter = MEMORY_EXPORTER
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let logs_count = exporter.get_emitted_logs().map(|logs| logs.len()).unwrap_or(0);
         Ok::<_, Infallible>(logs_count as i64)
     })
@@ -37,7 +39,9 @@ pub fn make_logs_memory_exporter_class() -> ClassEntity<()> {
 
     class.add_static_method("getLogs", Visibility::Public, |_| {
         let mut result = ZArray::new();
-        let exporter = MEMORY_EXPORTER.lock().unwrap();
+        let exporter = MEMORY_EXPORTER
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let logs = exporter.get_emitted_logs().unwrap_or_default();
         for (_i, log) in logs.iter().enumerate() {
             let mut arr = ZArray::new();
@@ -123,7 +127,9 @@ pub fn make_logs_memory_exporter_class() -> ClassEntity<()> {
         .return_type(ReturnType::new(ReturnTypeHint::Array));
 
     class.add_static_method("reset", Visibility::Public, |_| {
-        let exporter = MEMORY_EXPORTER.lock().unwrap();
+        let exporter = MEMORY_EXPORTER
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         exporter.reset();
         Ok::<_, Infallible>(())
     })

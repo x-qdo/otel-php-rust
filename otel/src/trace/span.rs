@@ -81,7 +81,7 @@ pub fn make_span_class(
 
     class
         .add_method("setStatus", Visibility::Public, |this, arguments| {
-            let status = match arguments[0].expect_z_str()?.to_str() {
+            let status = match util::arg(arguments, 0)?.expect_z_str()?.to_str() {
                 Ok(s) => s.to_string(),
                 Err(_) => return Ok(this.to_ref_owned()), // Ignore invalid UTF-8 input
             };
@@ -113,8 +113,8 @@ pub fn make_span_class(
         .argument(Argument::new("description").optional());
 
     class.add_method("setAttribute", Visibility::Public, |this, arguments| {
-        let key = util::attribute_key(arguments[0].expect_z_str()?.to_str()?);
-        if let Some(kv) = util::zval_to_key_value(key, &arguments[1]) {
+        let key = util::attribute_key(util::arg(arguments, 0)?.expect_z_str()?.to_str()?);
+        if let Some(kv) = util::zval_to_key_value(key, util::arg(arguments, 1)?) {
             if let Some(span) = this.as_mut_state().as_mut() {
                 span.set_attribute(kv);
             } else if let Some(ctx) = storage::get_context_instance(get_instance_id(this)) {
@@ -126,7 +126,7 @@ pub fn make_span_class(
     });
 
     class.add_method("setAttributes", Visibility::Public, |this, arguments| {
-        let attributes = util::zval_arr_to_key_value_vec(arguments[0].expect_z_arr()?);
+        let attributes = util::zval_arr_to_key_value_vec(util::arg(arguments, 0)?.expect_z_arr()?);
         if let Some(span) = this.as_mut_state().as_mut() {
             span.set_attributes(attributes);
         } else if let Some(ctx) = storage::get_context_instance(get_instance_id(this)) {
@@ -138,7 +138,7 @@ pub fn make_span_class(
 
     class.add_method("updateName", Visibility::Public, |this, arguments| {
         tracing::debug!("Span::updateName");
-        let name = arguments[0].expect_z_str()?.to_str()?.to_string();
+        let name = util::arg(arguments, 0)?.expect_z_str()?.to_str()?.to_string();
 
         if let Some(span) = this.as_mut_state().as_mut() {
             tracing::debug!("Span::updateName (SdkSpan)");
@@ -151,7 +151,7 @@ pub fn make_span_class(
     });
 
     class.add_method("recordException", Visibility::Public, |this, arguments| {
-        let exception = arguments[0].expect_mut_z_obj()?;
+        let exception = util::arg_mut(arguments, 0)?.expect_mut_z_obj()?;
         let attributes = crate::error::php_exception_to_attributes(exception);
         if let Some(span) = this.as_mut_state().as_mut() {
             span.add_event("exception", attributes);
@@ -163,7 +163,7 @@ pub fn make_span_class(
 
     class.add_method("addLink", Visibility::Public, |this, arguments| {
         let span_context = {
-            let span_context_obj: &mut ZObj = arguments[0].expect_mut_z_obj()?;
+            let span_context_obj: &mut ZObj = util::arg_mut(arguments, 0)?.expect_mut_z_obj()?;
             let state_obj = unsafe { span_context_obj.as_state_obj::<Option<SpanContext>>() };
             match state_obj.as_state() {
                 Some(value) => value.clone(),
@@ -186,7 +186,7 @@ pub fn make_span_class(
     });
 
     class.add_method("addEvent", Visibility::Public, |this, arguments| {
-        let event_name = arguments[0].expect_z_str()?.to_str()?.to_string();
+        let event_name = util::arg(arguments, 0)?.expect_z_str()?.to_str()?.to_string();
         let attributes = arguments
             .get(1)
             .and_then(|attrs| attrs.as_z_arr())
@@ -252,7 +252,7 @@ pub fn make_span_class(
         "storeInContext",
         Visibility::Public,
         move |this, arguments| {
-            let context_obj: &mut ZObj = arguments[0].expect_mut_z_obj()?;
+            let context_obj: &mut ZObj = util::arg_mut(arguments, 0)?.expect_mut_z_obj()?;
             let context_id = get_instance_id(context_obj);
             let arc_ctx = if let Some(span) = this.as_mut_state().take() {
                 let context = storage::resolve_context(context_id);
@@ -274,7 +274,7 @@ pub fn make_span_class(
 
     let span_class_clone = class.bound_class();
     class.add_static_method("fromContext", Visibility::Public, move |arguments| {
-        span_object_from_context(&span_class_clone, arguments[0].expect_mut_z_obj()?)
+        span_object_from_context(&span_class_clone, util::arg_mut(arguments, 0)?.expect_mut_z_obj()?)
     });
 
     class

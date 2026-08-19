@@ -366,6 +366,10 @@ impl<T> StateObj<T> {
     }
 
     pub(crate) unsafe fn drop_state(&mut self) {
+        // Null when the state constructor panicked; see `classes::create_object`.
+        if self.any_state.is_null() {
+            return;
+        }
         unsafe {
             drop(Box::from_raw(self.any_state));
         }
@@ -393,7 +397,10 @@ impl<T: 'static> StateObj<T> {
     /// Gets inner state.
     pub fn as_state(&self) -> &T {
         unsafe {
-            let any_state = self.any_state.as_ref().unwrap();
+            let any_state = self
+                .any_state
+                .as_ref()
+                .expect("object has no state: its state constructor panicked");
             any_state.downcast_ref().unwrap()
         }
     }
@@ -401,7 +408,10 @@ impl<T: 'static> StateObj<T> {
     /// Gets inner mutable state.
     pub fn as_mut_state(&mut self) -> &mut T {
         unsafe {
-            let any_state = self.any_state.as_mut().unwrap();
+            let any_state = self
+                .any_state
+                .as_mut()
+                .expect("object has no state: its state constructor panicked");
             any_state.downcast_mut().unwrap()
         }
     }
@@ -461,6 +471,9 @@ impl<T: 'static> StateObject<T> {
     pub fn into_state(mut self) -> Option<T> {
         unsafe {
             if self.gc_refcount() != 1 {
+                return None;
+            }
+            if self.any_state.is_null() {
                 return None;
             }
             let null: AnyState = Box::into_raw(Box::new(()));

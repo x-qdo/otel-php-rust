@@ -58,16 +58,23 @@ where
         }
     };
 
-    let plugin_manager = get_plugin_manager()
-        .expect("PluginManager not initialized")
+    let Some(plugin_manager) = get_plugin_manager() else {
+        upstream(Some(exec_data), return_value);
+        return;
+    };
+    let plugin_manager = plugin_manager
         .read()
-        .unwrap();
-    let observer = plugin_manager.get_function_observer(exec_data);
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Hook panics are contained so the wrapped PHP function always runs and
+    // the `extern "C"` entry points never unwind into the engine.
+    let observer = crate::panic::contain(|| plugin_manager.get_function_observer(exec_data)).flatten();
 
     if let Some(ref obs) = observer {
-        for hook in obs.pre_hooks() {
-            hook(exec_data);
-        }
+        crate::panic::contain(|| {
+            for hook in obs.pre_hooks() {
+                hook(exec_data);
+            }
+        });
     }
 
     // Destructure return_value before moving it
@@ -82,7 +89,7 @@ where
     upstream(Some(exec_data), Some(retval));
 
     if let Some(ref _observer) = observer {
-        run_post_hooks(&plugin_manager, exec_data, retval);
+        crate::panic::contain(|| run_post_hooks(&plugin_manager, exec_data, retval));
     }
 }
 

@@ -24,7 +24,9 @@ static EVENT_NAMES: Lazy<Mutex<HashSet<&'static str>>> = Lazy::new(|| Mutex::new
 /// Intern event names to avoid leaking memory since opentelemetry-rust requires &'static str
 /// This only reduces memory leaks by re-using event names, but does not eliminate them
 fn get_or_intern_event_name(name: &str) -> &'static str {
-    let mut set = EVENT_NAMES.lock().unwrap();
+    let mut set = EVENT_NAMES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(&existing) = set.get(name) {
         existing
     } else {
@@ -83,9 +85,14 @@ pub fn make_logger_class(
     class
         .add_method("emit", Visibility::Public, |this, arguments| {
             tracing::debug!("Logger::emit called");
-            let logger: &SdkLogger = this.as_state().as_ref().unwrap();
+            // A logger without native state (created without its state, e.g.
+            // by reflection) has no provider to emit to and drops the record.
+            let Some(logger): Option<&SdkLogger> = this.as_state().as_ref() else {
+                tracing::debug!("Logger::emit on a logger without native state; record dropped");
+                return Ok::<_, phper::Error>(());
+            };
 
-            let record_zval = &arguments[0];
+            let record_zval = crate::util::arg(arguments, 0)?;
             let record_obj = record_zval.expect_z_obj();
             let record_state = unsafe { record_obj?.as_state_obj::<LogRecordState>().as_state() };
 

@@ -1,25 +1,64 @@
 # Vendored phper
 
-This directory is the `phper` crate from upstream commit
-`84adb0bf37890162df8fe4488a7bd009413e3ee9` (version 0.17.0).
+This directory is the `phper` crate from upstream tag `phper-v0.17.5`
+(commit `904ba7f94f97207fc33457c6088a5a8af425697d`). `Cargo.toml` replaces the
+workspace inheritance with the concrete values of that tag (phper-alloc 0.16.3,
+phper-macros 0.15.3, phper-sys/phper-build 0.15.6); `LICENSE` and `README.md`
+are copies of the upstream symlink targets.
 
-It is vendored because `create_object` allocated a fresh Zend object-handler
-table for every PHP object. Zend does not own or release that table, so manual
-span-heavy long-running workers grew native RSS linearly even after PHP had
-destroyed the builder and span objects.
+It is vendored for five local changes. Remove this copy once equivalent fixes
+are available in a released upstream crate.
 
-The local change shares two immutable process-lifetime handler tables: one for
-cloneable state objects and one for non-cloneable state objects. Remove this
-vendor copy once the equivalent fix is available in a released upstream crate.
-
-Two further local changes remove per-call overhead on the span hot path:
-
+- `create_object` allocated a fresh Zend object-handler table for every PHP
+  object. Zend does not own or release that table, so manual span-heavy
+  long-running workers grew native RSS linearly even after PHP had destroyed
+  the builder and span objects. The local change shares two immutable
+  process-lifetime handler tables: one for cloneable state objects and one for
+  non-cloneable state objects.
 - `invoke` resolves its handler from `zend_internal_function.reserved[slot]`
-  (`zend_get_resource_handle("phper")`), populated at MINIT. PHP rebuilds the
-  arg_info array of every function with a declared parameter or return type
-  (`zend_register_functions`), which drops phper's hidden trailer and previously
-  forced a `CString` allocation + `HashMap` lookup on every such call. The trailer
-  and the name lookup remain as fallbacks.
-- `find_real_ce` returns immediately for internal classes owned by this module and
-  compares class-entry pointers for userland subclasses instead of comparing names.
+  (`zend_get_resource_handle("phper")`), populated at MINIT for every module
+  function and class method. Upstream 0.17.1 (#220) removed the hidden
+  arg_info trailer - PHP rebuilds the arg_info array of every function with a
+  declared parameter or return type and dropped it - and now looks the handler
+  up by class and function name on every call, which costs two `CString`
+  allocations plus a hash lookup per PHP-visible method call. The reserved slot
+  survives the arg_info rebuild and `zend_duplicate_internal_function`; the
+  name lookup remains as the fallback.
+- `find_real_ce` returns immediately for internal classes owned by this module
+  and compares class-entry pointers for userland subclasses instead of
+  comparing names for every object creation.
+- Signature fidelity for the OpenTelemetry API surface: `ClassEntity::set_final`
+  / `set_abstract` (class `ce_flags`), `MethodEntity::set_final`,
+  `ArgumentTypeHint::Union` / `ReturnTypeHint::Union` (one class member plus
+  scalar `MAY_BE_*` members, e.g. `Severity|int`, `float|int`),
+  `ReturnTypeHint::Static`, `ArgumentTypeHint::False` for `T|false|null`
+  unions, `Argument::variadic()` (`callable ...$callbacks`), and the
+  default-value snippet is kept on
+  class-typed parameters (the C helper `phper_zend_arg_obj_info` drops it, so
+  `?ContextInterface $context = null` was reported by Reflection as optional
+  without a default and could not be skipped by named arguments).
 
+- Panic containment at the FFI boundary. Rust aborts the process when a
+  panic unwinds out of an `extern "C"` function, so upstream turns any panic
+  in extension code into a dead PHP-FPM worker or CLI process. Every engine
+  entry point that runs extension code now wraps it in
+  `std::panic::catch_unwind`: `invoke` (`src/functions.rs`) rethrows the
+  panic as a catchable PHP `\Error` with message
+  `"<module name>: internal error: <panic payload>"` (`PanicError` /
+  `throw_panic` in `src/errors.rs`) and returns null; `module_startup`
+  (`src/modules.rs`) returns `FAILURE` so PHP refuses to start the module,
+  while `request_startup`, `request_shutdown`, `module_shutdown` and
+  `module_info` return `SUCCESS` and continue (the engine `exit(1)`s the
+  process when RINIT fails, which is what the change avoids); `create_object`
+  and `clone_object` (`src/classes.rs`) catch a panicking state constructor or
+  cloner, leave the object with a null state and a pending `\Error`;
+  `free_object` leaks a state whose `Drop` panics instead of unwinding into
+  `zend_object_std_dtor`. `StateObj::drop_state`/`into_state`
+  (`src/objects.rs`) tolerate the null state and the accessors name the cause.
+  Logging of the panic is left to the process panic hook (the extension
+  installs a rate-limited one). `Module::name()` is exposed for the message.
+
+To re-vendor: extract `phper/` from the upstream tag, restore the concrete
+`Cargo.toml` values and file copies above, and reapply the five changes
+(`src/classes.rs`, `src/errors.rs`, `src/functions.rs`, `src/modules.rs`,
+`src/objects.rs`, `src/types.rs`).

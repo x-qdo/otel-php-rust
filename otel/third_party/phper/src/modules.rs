@@ -14,7 +14,7 @@ use crate::{
     classes::{ClassEntity, Interface, InterfaceEntity, StateClass},
     constants::Constant,
     errors::Throwable,
-    functions::{Function, FunctionEntity, FunctionEntry, HandlerMap},
+    functions::{Function, FunctionEntity, FunctionEntry, FunctionExecuteData, HandlerMap},
     ini,
     sys::*,
     types::Scalar,
@@ -23,31 +23,65 @@ use crate::{
 };
 use std::{
     collections::HashMap,
-    ffi::CString,
+    ffi::{CStr, CString},
     mem::{size_of, take, transmute, zeroed},
     os::raw::{c_int, c_uchar, c_uint, c_ushort},
+    panic::{AssertUnwindSafe, catch_unwind},
     ptr::{null, null_mut},
     rc::Rc,
+    sync::atomic::{AtomicPtr, Ordering},
 };
 
 /// Global pointer hold the Module builder.
 /// Because PHP is single threaded, so there is no lock here.
-static mut GLOBAL_MODULE: *mut Module = null_mut();
+static GLOBAL_MODULE: AtomicPtr<Module> = AtomicPtr::new(null_mut());
 
-static mut GLOBAL_MODULE_ENTRY: *mut zend_module_entry = null_mut();
+static GLOBAL_MODULE_ENTRY: AtomicPtr<zend_module_entry> = AtomicPtr::new(null_mut());
 
 #[inline]
 pub(crate) unsafe fn global_module<'a>() -> &'a Module {
-    unsafe { GLOBAL_MODULE.as_ref().unwrap() }
+    unsafe {
+        let module = GLOBAL_MODULE.load(Ordering::Acquire);
+        module.as_ref().unwrap()
+    }
 }
 
 pub(crate) unsafe fn global_module_entry() -> *const zend_module_entry {
-    unsafe { GLOBAL_MODULE_ENTRY }
+    GLOBAL_MODULE_ENTRY.load(Ordering::Acquire)
 }
 
-unsafe extern "C" fn module_startup(_type: c_int, module_number: c_int) -> c_int {
+#[inline]
+unsafe fn global_module_mut<'a>() -> &'a mut Module {
     unsafe {
-        let module = GLOBAL_MODULE.as_mut().unwrap();
+        let module = GLOBAL_MODULE.load(Ordering::Acquire);
+        module.as_mut().unwrap()
+    }
+}
+
+#[cfg(phper_zts)]
+type RequestHook = dyn Fn() + Send + Sync;
+
+#[cfg(not(phper_zts))]
+type RequestHook = dyn Fn();
+
+// Rust aborts the process when a panic unwinds out of an `extern "C"`
+// function, so every lifecycle hook below runs the extension code under
+// `catch_unwind`. A failed MINIT is reported to the engine (PHP refuses to
+// start the module); RINIT, RSHUTDOWN, MSHUTDOWN and MINFO report success and
+// carry on, because the engine exits the process when RINIT fails and the
+// shutdown hooks have nothing safer to do than continue. Diagnostics are the
+// job of the panic hook installed by the extension.
+
+unsafe extern "C" fn module_startup(_type: c_int, module_number: c_int) -> c_int {
+    match catch_unwind(AssertUnwindSafe(|| unsafe { module_startup_inner(module_number) })) {
+        Ok(()) => ZEND_RESULT_CODE_SUCCESS,
+        Err(_) => ZEND_RESULT_CODE_FAILURE,
+    }
+}
+
+unsafe fn module_startup_inner(module_number: c_int) {
+    unsafe {
+        let module = global_module_mut();
 
         ini::register(&module.ini_entities, module_number);
 
@@ -59,6 +93,20 @@ unsafe extern "C" fn module_startup(_type: c_int, module_number: c_int) -> c_int
             interface_entity.init();
         }
 
+        for function_entity in &module.function_entities {
+            module.handler_map.insert(
+                (None, function_entity.name.clone()),
+                function_entity.handler.clone(),
+            );
+        }
+        crate::functions::attach_handlers(
+            crate::cg!(function_table),
+            module
+                .function_entities
+                .iter()
+                .map(|f| (f.name.as_c_str(), f.handler.clone())),
+        );
+
         for class_entity in &module.class_entities {
             let ce = class_entity.init();
             class_entity.declare_properties(ce);
@@ -69,15 +117,7 @@ unsafe extern "C" fn module_startup(_type: c_int, module_number: c_int) -> c_int
             );
         }
 
-        crate::functions::attach_handlers(
-            compiler_globals.function_table,
-            module
-                .function_entities
-                .iter()
-                .map(|f| (f.name.as_c_str(), f.handler.clone())),
-        );
-
-        #[cfg(phper_enum_supported)]
+        #[cfg(all(phper_major_version = "8", not(phper_minor_version = "0")))]
         for enum_entity in &module.enum_entities {
             enum_entity.init();
             module.handler_map.extend(enum_entity.handler_map());
@@ -86,52 +126,47 @@ unsafe extern "C" fn module_startup(_type: c_int, module_number: c_int) -> c_int
         if let Some(f) = take(&mut module.module_init) {
             f();
         }
-
-        ZEND_RESULT_CODE_SUCCESS
     }
 }
 
 unsafe extern "C" fn module_shutdown(_type: c_int, module_number: c_int) -> c_int {
-    unsafe {
-        let module = GLOBAL_MODULE.as_mut().unwrap();
+    let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
+        let module = global_module_mut();
 
         ini::unregister(module_number);
 
         if let Some(f) = take(&mut module.module_shutdown) {
             f();
         }
-
-        ZEND_RESULT_CODE_SUCCESS
-    }
+    }));
+    ZEND_RESULT_CODE_SUCCESS
 }
 
 unsafe extern "C" fn request_startup(_type: c_int, _module_number: c_int) -> c_int {
-    unsafe {
-        let module = GLOBAL_MODULE.as_ref().unwrap();
+    let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
+        let module = global_module();
 
         if let Some(f) = &module.request_init {
             f();
         }
-
-        ZEND_RESULT_CODE_SUCCESS
-    }
+    }));
+    ZEND_RESULT_CODE_SUCCESS
 }
 
 unsafe extern "C" fn request_shutdown(_type: c_int, _module_number: c_int) -> c_int {
-    unsafe {
-        let module = GLOBAL_MODULE.as_ref().unwrap();
+    let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
+        let module = global_module();
 
         if let Some(f) = &module.request_shutdown {
             f();
         }
-
-        ZEND_RESULT_CODE_SUCCESS
-    }
+    }));
+    ZEND_RESULT_CODE_SUCCESS
 }
 
 unsafe extern "C" fn module_info(zend_module: *mut zend_module_entry) {
-    unsafe {
-        let module = GLOBAL_MODULE.as_ref().unwrap();
+    let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
+        let module = global_module();
 
         php_info_print_table_start();
         if !module.version.as_bytes().is_empty() {
@@ -146,7 +181,7 @@ unsafe extern "C" fn module_info(zend_module: *mut zend_module_entry) {
         php_info_print_table_end();
 
         display_ini_entries(zend_module);
-    }
+    }));
 }
 
 /// Builder for registering PHP Module.
@@ -157,12 +192,12 @@ pub struct Module {
     author: CString,
     module_init: Option<Box<dyn FnOnce()>>,
     module_shutdown: Option<Box<dyn FnOnce()>>,
-    request_init: Option<Box<dyn Fn()>>,
-    request_shutdown: Option<Box<dyn Fn()>>,
+    request_init: Option<Box<RequestHook>>,
+    request_shutdown: Option<Box<RequestHook>>,
     function_entities: Vec<FunctionEntity>,
     class_entities: Vec<ClassEntity<()>>,
     interface_entities: Vec<InterfaceEntity>,
-    #[cfg(phper_enum_supported)]
+    #[cfg(all(phper_major_version = "8", not(phper_minor_version = "0")))]
     enum_entities: Vec<crate::enums::EnumEntity<()>>,
     constants: Vec<Constant>,
     ini_entities: Vec<ini::IniEntity>,
@@ -187,13 +222,19 @@ impl Module {
             function_entities: vec![],
             class_entities: Default::default(),
             interface_entities: Default::default(),
-            #[cfg(phper_enum_supported)]
+            #[cfg(all(phper_major_version = "8", not(phper_minor_version = "0")))]
             enum_entities: Default::default(),
             constants: Default::default(),
             ini_entities: Default::default(),
             infos: Default::default(),
             handler_map: Default::default(),
         }
+    }
+
+    /// The module name.
+    #[inline]
+    pub fn name(&self) -> &CStr {
+        &self.name
     }
 
     /// Register `MINIT` hook.
@@ -207,11 +248,25 @@ impl Module {
     }
 
     /// Register `RINIT` hook.
+    #[cfg(phper_zts)]
+    pub fn on_request_init(&mut self, func: impl Fn() + Send + Sync + 'static) {
+        self.request_init = Some(Box::new(func));
+    }
+
+    /// Register `RINIT` hook.
+    #[cfg(not(phper_zts))]
     pub fn on_request_init(&mut self, func: impl Fn() + 'static) {
         self.request_init = Some(Box::new(func));
     }
 
     /// Register `RSHUTDOWN` hook.
+    #[cfg(phper_zts)]
+    pub fn on_request_shutdown(&mut self, func: impl Fn() + Send + Sync + 'static) {
+        self.request_shutdown = Some(Box::new(func));
+    }
+
+    /// Register `RSHUTDOWN` hook.
+    #[cfg(not(phper_zts))]
     pub fn on_request_shutdown(&mut self, func: impl Fn() + 'static) {
         self.request_shutdown = Some(Box::new(func));
     }
@@ -230,9 +285,33 @@ impl Module {
         self.function_entities.last_mut().unwrap()
     }
 
+    /// Register function with [`ExecuteData`](crate::values::ExecuteData)
+    /// access.
+    ///
+    /// Unlike [`add_function`], the handler receives `&mut ExecuteData`
+    /// alongside `&mut [ZVal]`, enabling methods like
+    /// [`materialize_missing`](crate::values::ExecuteData::materialize_missing).
+    pub fn add_function_with_execute_data<F, Z, E>(
+        &mut self, name: impl Into<String>, handler: F,
+    ) -> &mut FunctionEntity
+    where
+        F: Fn(&mut crate::values::ExecuteData, &mut [ZVal]) -> Result<Z, E> + 'static,
+        Z: Into<ZVal> + 'static,
+        E: Throwable + 'static,
+    {
+        self.function_entities.push(FunctionEntity::new(
+            name,
+            Rc::new(FunctionExecuteData::new(handler)),
+        ));
+        self.function_entities.last_mut().unwrap()
+    }
+
     /// Register class to module.
     pub fn add_class<T>(&mut self, class: ClassEntity<T>) -> StateClass<T> {
         let bound_class = class.bound_class();
+        // SAFETY: The type parameter `T` is erased to `()` for storage in the
+        // heterogeneous collection. The actual type is recovered later via
+        // `StateObj<T>` at handler invocation time through the bound class.
         self.class_entities
             .push(unsafe { transmute::<ClassEntity<T>, ClassEntity<()>>(class) });
         bound_class
@@ -246,11 +325,14 @@ impl Module {
     }
 
     /// Register enum to module.
-    #[cfg(phper_enum_supported)]
+    #[cfg(all(phper_major_version = "8", not(phper_minor_version = "0")))]
     pub fn add_enum<B: crate::enums::EnumBackingType>(
         &mut self, enum_entity: crate::enums::EnumEntity<B>,
     ) -> crate::enums::Enum {
         let bound_enum = enum_entity.bound_enum();
+        // SAFETY: The type parameter `B` is erased to `()` for storage in the
+        // heterogeneous collection. The actual type is recovered later through
+        // the bound enum handle.
         self.enum_entities.push(unsafe {
             transmute::<crate::enums::EnumEntity<B>, crate::enums::EnumEntity<()>>(enum_entity)
         });
@@ -286,8 +368,9 @@ impl Module {
     #[doc(hidden)]
     pub unsafe fn module_entry(self) -> *const zend_module_entry {
         unsafe {
-            if !GLOBAL_MODULE_ENTRY.is_null() {
-                return GLOBAL_MODULE_ENTRY;
+            let entry = GLOBAL_MODULE_ENTRY.load(Ordering::Acquire);
+            if !entry.is_null() {
+                return entry;
             }
 
             assert!(!self.name.as_bytes().is_empty(), "module name must be set");
@@ -328,10 +411,31 @@ impl Module {
                 build_id: phper_get_zend_module_build_id(),
             });
 
-            GLOBAL_MODULE = Box::into_raw(module);
-            GLOBAL_MODULE_ENTRY = Box::into_raw(entry);
+            let module_ptr = Box::into_raw(module);
+            let entry_ptr = Box::into_raw(entry);
 
-            GLOBAL_MODULE_ENTRY
+            match GLOBAL_MODULE.compare_exchange(
+                null_mut(),
+                module_ptr,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    GLOBAL_MODULE_ENTRY.store(entry_ptr, Ordering::Release);
+                    entry_ptr
+                }
+                Err(_) => {
+                    drop(Box::from_raw(module_ptr));
+                    drop(Box::from_raw(entry_ptr));
+                    loop {
+                        let existing_entry = GLOBAL_MODULE_ENTRY.load(Ordering::Acquire);
+                        if !existing_entry.is_null() {
+                            break existing_entry;
+                        }
+                        std::hint::spin_loop();
+                    }
+                }
+            }
         }
     }
 

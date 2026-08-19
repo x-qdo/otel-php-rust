@@ -61,8 +61,8 @@ pub fn make_span_builder_class(
 
     class
         .add_method("setAttribute", Visibility::Public, |this, arguments| {
-            let name = crate::util::attribute_key(arguments[0].expect_z_str()?.to_str()?);
-            let Some(attribute) = crate::util::zval_to_key_value(name, &arguments[1]) else {
+            let name = crate::util::attribute_key(crate::util::arg(arguments, 0)?.expect_z_str()?.to_str()?);
+            let Some(attribute) = crate::util::zval_to_key_value(name, crate::util::arg(arguments, 1)?) else {
                 return Ok::<_, phper::Error>(this.to_ref_owned());
             };
             let Some(span_builder) = this.as_mut_state().span_builder.as_mut() else {
@@ -80,7 +80,7 @@ pub fn make_span_builder_class(
 
     class
         .add_method("setAttributes", Visibility::Public, |this, arguments| {
-            let attributes = crate::util::zval_arr_to_key_value_vec(arguments[0].expect_z_arr()?);
+            let attributes = crate::util::zval_arr_to_key_value_vec(crate::util::arg(arguments, 0)?.expect_z_arr()?);
             let Some(span_builder) = this.as_mut_state().span_builder.as_mut() else {
                 return Ok::<_, phper::Error>(this.to_ref_owned());
             };
@@ -98,7 +98,7 @@ pub fn make_span_builder_class(
             "setStartTimestamp",
             Visibility::Public,
             |this, arguments| {
-                let timestamp_nanos = arguments[0].expect_long()?;
+                let timestamp_nanos = crate::util::arg(arguments, 0)?.expect_long()?;
                 if timestamp_nanos < 0 {
                     tracing::warn!("SpanBuilder::setStartTimestamp ignored a negative timestamp");
                     return Ok::<_, phper::Error>(this.to_ref_owned());
@@ -117,7 +117,7 @@ pub fn make_span_builder_class(
     class
         .add_method("addLink", Visibility::Public, |this, arguments| {
             let span_context = {
-                let span_context_obj = arguments[0].expect_mut_z_obj()?;
+                let span_context_obj = crate::util::arg_mut(arguments, 0)?.expect_mut_z_obj()?;
                 let state_obj = unsafe { span_context_obj.as_state_obj::<Option<SpanContext>>() };
                 let Some(span_context) = state_obj.as_state().as_ref() else {
                     tracing::warn!("SpanBuilder::addLink ignored an invalid SpanContext");
@@ -147,7 +147,7 @@ pub fn make_span_builder_class(
         .add_method("setParent", Visibility::Public, |this, arguments| {
             let state = this.as_mut_state();
 
-            let context_obj = arguments[0].expect_mut_z_obj()?;
+            let context_obj = crate::util::arg_mut(arguments, 0)?.expect_mut_z_obj()?;
             let context_id = context_obj
                 .get_property("context_id")
                 .as_long()
@@ -164,7 +164,7 @@ pub fn make_span_builder_class(
 
     class
         .add_method("setSpanKind", Visibility::Public, |this, arguments| {
-            let span_kind_int = arguments[0].expect_long()?;
+            let span_kind_int = crate::util::arg(arguments, 0)?.expect_long()?;
             let span_kind = match span_kind_int {
                 0 => SpanKind::Internal,
                 1 => SpanKind::Server,

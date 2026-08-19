@@ -40,7 +40,7 @@ pub fn make_trace_context_propagator_class(
                 .unwrap_or_else(storage::current_context);
 
             // Carrier gymnastics (PHP array passed by ref)
-            let carrier_ref = arguments[0].expect_mut_z_ref()?;
+            let carrier_ref = crate::util::arg_mut(arguments, 0)?.expect_mut_z_ref()?;
             let carrier_val = carrier_ref.val_mut();
             let mut cloned = carrier_val.clone();
 
@@ -75,7 +75,7 @@ pub fn make_trace_context_propagator_class(
     class
         .add_method("extract", Visibility::Public, move |_, arguments| {
             // Carrier (input headers)
-            let carrier = arguments[0].expect_z_arr()?;
+            let carrier = crate::util::arg(arguments, 0)?.expect_z_arr()?;
 
             let mut map = std::collections::HashMap::<String, String>::new();
             for (k, v) in carrier.iter() {

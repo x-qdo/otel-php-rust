@@ -35,6 +35,7 @@ impl TestPlugin {
                 Arc::new(DemoFunctionHandler),
                 Arc::new(DemoHelloHandler),
                 Arc::new(TestClassHandler),
+                Arc::new(PanicHookHandler),
             ],
         }
     }
@@ -77,7 +78,7 @@ impl Handler for DemoHandler {
 }
 
 impl DemoHandler {
-    unsafe extern "C" fn pre_callback(exec_data: *mut ExecuteData) {
+    unsafe fn pre_callback(exec_data: *mut ExecuteData) {
         let tracer = tracer_provider::get_tracer_provider().tracer("php.otel.auto.test");
         let exec_data_ref = unsafe { &*exec_data };
         let span_name = get_fqn(exec_data_ref).unwrap_or_default();
@@ -85,7 +86,7 @@ impl DemoHandler {
         utils::start_and_activate_span(tracer, &span_name, vec![], exec_data, opentelemetry::trace::SpanKind::Internal);
     }
 
-    unsafe extern "C" fn post_callback(
+    unsafe fn post_callback(
         exec_data: *mut ExecuteData,
         _retval: &mut ZVal,
         _exception: Option<&mut ZObj>
@@ -113,7 +114,7 @@ impl Handler for DemoHelloHandler {
 }
 
 impl DemoHelloHandler {
-    unsafe extern "C" fn post_callback(
+    unsafe fn post_callback(
         _exec_data: *mut ExecuteData,
         retval: &mut ZVal,
         _exception: Option<&mut ZObj>
@@ -150,7 +151,7 @@ impl Handler for DemoFunctionHandler {
 }
 
 impl DemoFunctionHandler {
-    unsafe extern "C" fn pre_callback(exec_data: *mut ExecuteData) {
+    unsafe fn pre_callback(exec_data: *mut ExecuteData) {
         let tracer = tracer_provider::get_tracer_provider().tracer("php.otel.auto.test");
         let mut attributes = vec![];
         attributes.push(KeyValue::new("my-attribute", "my-value".to_string()));
@@ -159,7 +160,7 @@ impl DemoFunctionHandler {
         utils::start_and_activate_span(tracer, &span_name, attributes, exec_data, opentelemetry::trace::SpanKind::Internal);
     }
 
-    unsafe extern "C" fn post_callback(
+    unsafe fn post_callback(
         exec_data: *mut ExecuteData,
         _retval: &mut ZVal,
         exception: Option<&mut ZObj>
@@ -197,11 +198,11 @@ impl Handler for TestClassHandler {
 }
 
 impl TestClassHandler {
-    unsafe extern "C" fn pre_callback(_exec_data: *mut ExecuteData) {
+    unsafe fn pre_callback(_exec_data: *mut ExecuteData) {
         tracing::debug!("TestClassHandler: pre_callback called");
     }
 
-    unsafe extern "C" fn post_callback(
+    unsafe fn post_callback(
         _exec_data: *mut ExecuteData,
         retval: &mut ZVal,
         exception: Option<&mut ZObj>
@@ -209,5 +210,26 @@ impl TestClassHandler {
         tracing::debug!("TestClassHandler: post_callback called");
         tracing::debug!("retval type: {:?}", retval.get_type_info());
         tracing::debug!("exception: {:?}", exception);
+    }
+}
+
+/// Observes the userland function `otel_test_panic_hook_target` and panics in
+/// both hooks, so the phpt suite can prove a panic inside an observer hook is
+/// contained at the observer boundary and the observed function still runs.
+pub struct PanicHookHandler;
+
+impl Handler for PanicHookHandler {
+    fn get_targets(&self) -> Vec<(Option<&'static str>, &'static str)> {
+        vec![(None, "otel_test_panic_hook_target")]
+    }
+    fn get_callbacks(&self) -> HandlerCallbacks {
+        HandlerCallbacks {
+            #[allow(clippy::panic)]
+            pre_observe: Some(Box::new(|_exec_data| panic!("test panic in observer pre hook"))),
+            #[allow(clippy::panic)]
+            post_observe: Some(Box::new(|_exec_data, _retval, _exception| {
+                panic!("test panic in observer post hook")
+            })),
+        }
     }
 }

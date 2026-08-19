@@ -226,7 +226,7 @@ pub fn build_storage_class(
     let scope_ce_attach = scope_ce.clone();
     class
         .add_method("attach", Visibility::Public, move |_, arguments| {
-            let context_obj: &mut ZObj = arguments[0].expect_mut_z_obj()?;
+            let context_obj: &mut ZObj = crate::util::arg_mut(arguments, 0)?.expect_mut_z_obj()?;
             let instance_id = context_obj.get_property("context_id").as_long();
             let opt_instance_id = instance_id.map(|id| id as u64);
             attach_context(opt_instance_id).map_err(phper::Error::boxed)?;

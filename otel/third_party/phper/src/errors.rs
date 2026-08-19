@@ -14,6 +14,7 @@ use crate::{classes::ClassEntry, objects::ZObject, sys::*, types::TypeInfo, valu
 use derive_more::Constructor;
 use phper_alloc::ToRefOwned;
 use std::{
+    any::Any,
     cell::RefCell,
     convert::Infallible,
     error,
@@ -21,12 +22,52 @@ use std::{
     fmt::{self, Debug, Display},
     io,
     marker::PhantomData,
-    mem::{ManuallyDrop, replace},
+    mem::ManuallyDrop,
     ops::{Deref, DerefMut},
+    panic::{AssertUnwindSafe, catch_unwind},
     ptr::null_mut,
     result,
     str::Utf8Error,
 };
+
+/// Helper macro to delegate `Throwable` trait methods for the `Error` enum.
+///
+/// Call with `& self` for shared-reference methods, or `& mut self` for
+/// mutable-reference methods.
+macro_rules! throwable_delegate {
+    // For `&self` methods (get_class, get_code, get_message).
+    ($self:expr, &self, $method:ident) => {
+        match $self {
+            Self::Io(e) => Throwable::$method(e as &dyn error::Error),
+            Self::Utf8(e) => Throwable::$method(e as &dyn error::Error),
+            Self::FromBytesWithNul(e) => Throwable::$method(e as &dyn error::Error),
+            Self::Boxed(e) => Throwable::$method(e.deref()),
+            Self::Throw(e) => Throwable::$method(e),
+            Self::ClassNotFound(e) => Throwable::$method(e),
+            Self::ArgumentCount(e) => Throwable::$method(e),
+            Self::InitializeObject(e) => Throwable::$method(e),
+            Self::ExpectType(e) => Throwable::$method(e),
+            Self::NotImplementThrowable(e) => Throwable::$method(e),
+            Self::CallArg(e) => Throwable::$method(e),
+        }
+    };
+    // For `&mut self` methods (to_object).
+    ($self:expr, &mut self, $method:ident) => {
+        match $self {
+            Self::Io(e) => Throwable::$method(e as &mut dyn error::Error),
+            Self::Utf8(e) => Throwable::$method(e as &mut dyn error::Error),
+            Self::FromBytesWithNul(e) => Throwable::$method(e as &mut dyn error::Error),
+            Self::Boxed(e) => Throwable::$method(e.deref_mut()),
+            Self::Throw(e) => Throwable::$method(e),
+            Self::ClassNotFound(e) => Throwable::$method(e),
+            Self::ArgumentCount(e) => Throwable::$method(e),
+            Self::InitializeObject(e) => Throwable::$method(e),
+            Self::ExpectType(e) => Throwable::$method(e),
+            Self::NotImplementThrowable(e) => Throwable::$method(e),
+            Self::CallArg(e) => Throwable::$method(e),
+        }
+    };
+}
 
 /// Predefined interface `Throwable`.
 #[inline]
@@ -210,6 +251,10 @@ pub enum Error {
     /// Failed when the object isn't implement PHP `Throwable`.
     #[error(transparent)]
     NotImplementThrowable(#[from] NotImplementThrowableError),
+
+    /// Call argument index out of bounds.
+    #[error(transparent)]
+    CallArg(#[from] CallArgError),
 }
 
 impl Error {
@@ -227,66 +272,20 @@ impl Error {
 }
 
 impl Throwable for Error {
-    #[inline]
     fn get_class(&self) -> &ClassEntry {
-        match self {
-            Error::Io(e) => Throwable::get_class(e as &dyn error::Error),
-            Error::Utf8(e) => Throwable::get_class(e as &dyn error::Error),
-            Error::FromBytesWithNul(e) => Throwable::get_class(e as &dyn error::Error),
-            Error::Boxed(e) => Throwable::get_class(e.deref()),
-            Error::Throw(e) => Throwable::get_class(e),
-            Error::ClassNotFound(e) => Throwable::get_class(e),
-            Error::ArgumentCount(e) => Throwable::get_class(e),
-            Error::InitializeObject(e) => Throwable::get_class(e),
-            Error::ExpectType(e) => Throwable::get_class(e),
-            Error::NotImplementThrowable(e) => Throwable::get_class(e),
-        }
+        throwable_delegate!(self, &self, get_class)
     }
 
-    #[inline]
     fn get_code(&self) -> Option<i64> {
-        match self {
-            Error::Io(e) => Throwable::get_code(e as &dyn error::Error),
-            Error::Utf8(e) => Throwable::get_code(e as &dyn error::Error),
-            Error::FromBytesWithNul(e) => Throwable::get_code(e as &dyn error::Error),
-            Error::Boxed(e) => Throwable::get_code(e.deref()),
-            Error::Throw(e) => Throwable::get_code(e),
-            Error::ClassNotFound(e) => Throwable::get_code(e),
-            Error::ArgumentCount(e) => Throwable::get_code(e),
-            Error::InitializeObject(e) => Throwable::get_code(e),
-            Error::ExpectType(e) => Throwable::get_code(e),
-            Error::NotImplementThrowable(e) => Throwable::get_code(e),
-        }
+        throwable_delegate!(self, &self, get_code)
     }
 
     fn get_message(&self) -> Option<String> {
-        match self {
-            Error::Io(e) => Throwable::get_message(e as &dyn error::Error),
-            Error::Utf8(e) => Throwable::get_message(e as &dyn error::Error),
-            Error::FromBytesWithNul(e) => Throwable::get_message(e as &dyn error::Error),
-            Error::Boxed(e) => Throwable::get_message(e.deref()),
-            Error::Throw(e) => Throwable::get_message(e),
-            Error::ClassNotFound(e) => Throwable::get_message(e),
-            Error::ArgumentCount(e) => Throwable::get_message(e),
-            Error::InitializeObject(e) => Throwable::get_message(e),
-            Error::ExpectType(e) => Throwable::get_message(e),
-            Error::NotImplementThrowable(e) => Throwable::get_message(e),
-        }
+        throwable_delegate!(self, &self, get_message)
     }
 
     fn to_object(&mut self) -> result::Result<ZObject, Box<dyn Throwable>> {
-        match self {
-            Error::Io(e) => Throwable::to_object(e as &mut dyn error::Error),
-            Error::Utf8(e) => Throwable::to_object(e as &mut dyn error::Error),
-            Error::FromBytesWithNul(e) => Throwable::to_object(e as &mut dyn error::Error),
-            Error::Boxed(e) => Throwable::to_object(e.deref_mut()),
-            Error::Throw(e) => Throwable::to_object(e),
-            Error::ClassNotFound(e) => Throwable::to_object(e),
-            Error::ArgumentCount(e) => Throwable::to_object(e),
-            Error::InitializeObject(e) => Throwable::to_object(e),
-            Error::ExpectType(e) => Throwable::to_object(e),
-            Error::NotImplementThrowable(e) => Throwable::to_object(e),
-        }
+        throwable_delegate!(self, &mut self, to_object)
     }
 }
 
@@ -391,6 +390,23 @@ impl Throwable for ThrowObject {
     }
 }
 
+/// Call argument index out of bounds.
+#[derive(Debug, thiserror::Error, Constructor)]
+#[error(
+    "call arg index {index} out of bounds: must be in [0, {declared_len}) (declared_len = \
+     {declared_len})"
+)]
+pub struct CallArgError {
+    index: usize,
+    declared_len: usize,
+}
+
+impl Throwable for CallArgError {
+    fn get_class(&self) -> &ClassEntry {
+        type_error_class()
+    }
+}
+
 /// Expect type is not the actual type.
 #[derive(Debug, thiserror::Error, Constructor)]
 #[error("type error: must be of type {expect_type}, {actual_type} given")]
@@ -467,6 +483,48 @@ impl Throwable for NotImplementThrowableError {
     }
 }
 
+/// A Rust panic contained at an FFI entry point (`invoke`, object creation),
+/// surfaced to PHP as a catchable `\Error`.
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub struct PanicError {
+    message: String,
+}
+
+impl PanicError {
+    /// Build from a caught panic payload: `"<module>: internal error: <payload>"`.
+    pub fn from_payload(payload: &(dyn Any + Send)) -> Self {
+        let module = unsafe { crate::modules::global_module() }
+            .name()
+            .to_str()
+            .unwrap_or("phper");
+        let detail = if let Some(message) = payload.downcast_ref::<&'static str>() {
+            message
+        } else if let Some(message) = payload.downcast_ref::<String>() {
+            message.as_str()
+        } else {
+            "non-string panic payload"
+        };
+        Self {
+            message: format!("{module}: internal error: {detail}"),
+        }
+    }
+}
+
+impl Throwable for PanicError {
+    fn get_class(&self) -> &ClassEntry {
+        error_class()
+    }
+}
+
+/// Throw the `\Error` for a panic caught at an FFI boundary. Building the
+/// exception object runs engine code, so a second panic there is swallowed
+/// rather than allowed to unwind out of the `extern "C"` frame.
+pub(crate) fn throw_panic(payload: Box<dyn Any + Send>) {
+    let error = PanicError::from_payload(payload.as_ref());
+    let _ = catch_unwind(AssertUnwindSafe(|| unsafe { throw(error) }));
+}
+
 /// Guarder for preventing the thrown exception from being overwritten.
 ///
 /// Normally, you don't need to use `ExceptionGuard`, unless before you call the
@@ -482,10 +540,10 @@ thread_local! {
 impl Default for ExceptionGuard {
     fn default() -> Self {
         EXCEPTION_STACK.with(|stack| unsafe {
-            #[allow(static_mut_refs)]
-            stack
-                .borrow_mut()
-                .push(replace(&mut eg!(exception), null_mut()));
+            let exception_ptr = &raw mut crate::eg!(exception);
+            let exception = *exception_ptr;
+            *exception_ptr = null_mut();
+            stack.borrow_mut().push(exception);
         });
         Self(PhantomData)
     }
@@ -494,7 +552,8 @@ impl Default for ExceptionGuard {
 impl Drop for ExceptionGuard {
     fn drop(&mut self) {
         EXCEPTION_STACK.with(|stack| unsafe {
-            eg!(exception) = stack.borrow_mut().pop().expect("exception stack is empty");
+            let exception = stack.borrow_mut().pop().expect("exception stack is empty");
+            *(&raw mut crate::eg!(exception)) = exception;
         });
     }
 }

@@ -1,3 +1,20 @@
+// Every panic that reaches a PHP-visible entry point is contained at the FFI
+// boundary (see `panic`), but it still costs the caller an `\Error`; code on
+// request paths must return errors or safe defaults instead. `cargo clippy`
+// (see `make lint`) rejects the panicking shortcuts; unit tests are exempt.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::indexing_slicing,
+    )
+)]
+
 use phper::{
     modules::Module,
     php_get_module,
@@ -21,6 +38,7 @@ pub mod runtime;
 pub mod util;
 pub mod module;
 pub mod auto;
+pub mod panic;
 
 include!(concat!(env!("OUT_DIR"), "/package_versions.rs"));
 
@@ -33,6 +51,7 @@ pub const ALLOCATOR_NAME: &str = if cfg!(feature = "mimalloc") {
 
 #[php_get_module]
 pub fn get_module() -> Module {
+    panic::install_hook_once();
     let mut module = Module::new(
         env!("CARGO_CRATE_NAME"),
         env!("CARGO_PKG_VERSION"),
@@ -43,6 +62,8 @@ pub fn get_module() -> Module {
     module::add_module_ini(&mut module);
 
     class_registry::register_classes_and_interfaces(&mut module);
+    #[cfg(feature = "test")]
+    panic::probes::register(&mut module);
 
     module.on_module_init(module::on_module_init);
     module.on_module_shutdown(module::on_module_shutdown);
