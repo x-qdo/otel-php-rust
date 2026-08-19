@@ -402,12 +402,14 @@ impl LaminasStatementPrepareHandler {
         // Get the first parameter as a string, if present
         let sql_from_param = {
             let exec_data_ref = unsafe { &mut *exec_data };
-            let sql_zval = exec_data_ref.get_mut_parameter(0);
-            if sql_zval.get_type_info() != phper::types::TypeInfo::NULL {
-                sql_zval.as_z_str().and_then(|s| s.to_str().ok().map(|s| s.to_owned()))
-            } else {
-                None
-            }
+            (exec_data_ref.num_args() > 0)
+                .then(|| exec_data_ref.get_mut_parameter(0))
+                .filter(|sql_zval| sql_zval.get_type_info() != phper::types::TypeInfo::NULL)
+                .and_then(|sql_zval| {
+                    sql_zval
+                        .as_z_str()
+                        .and_then(|s| s.to_str().ok().map(str::to_owned))
+                })
         };
 
         // Now get this_obj and use it for everything else
