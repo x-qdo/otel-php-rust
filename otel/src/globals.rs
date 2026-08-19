@@ -1,7 +1,7 @@
 use crate::{
     baggage::propagation::baggage_propagator::BaggagePropagatorClass,
     context::{
-        context::{ContextClass, current_context_value},
+        context_class::{ContextClass, current_context_value},
         propagation::{
             multi_text_map_propagator::MultiTextMapPropagatorClass,
             native_noop_response_propagator::NativeNoopResponsePropagatorClass,

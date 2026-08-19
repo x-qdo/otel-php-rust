@@ -1,5 +1,5 @@
 use crate::{
-    context::context::ContextClass,
+    context::context_class::ContextClass,
     logs::{
         log_record::{
             LogRecordState, any_value, nanos_to_system_time, set_attributes, set_context,

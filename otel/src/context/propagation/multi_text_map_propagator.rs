@@ -1,5 +1,5 @@
 use crate::context::{
-    context::{ContextClass, current_context_value},
+    context_class::{ContextClass, current_context_value},
     propagation::text_map_propagator_interface::TEXT_MAP_INTERFACE,
 };
 use phper::{

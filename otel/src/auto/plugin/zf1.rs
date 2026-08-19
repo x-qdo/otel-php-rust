@@ -63,6 +63,12 @@ pub struct Zf1Plugin {
     handlers: HandlerList,
 }
 
+impl Default for Zf1Plugin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Zf1Plugin {
     pub fn new() -> Self {
         Self {
@@ -229,20 +235,20 @@ impl Zf1SendResponseHandler {
 
                 let mut status_description = String::new();
 
-                if let Some(exception) = exceptions.first_mut() {
-                    if let Some(exception_obj) = exception.as_mut_z_obj() {
-                        if crate::config::sensitive_data::capture() {
-                            if let Ok(throwable) = phper::errors::ThrowObject::new(exception_obj.to_ref_owned()) {
-                                ctx.span().record_error(&throwable);
-                            }
-                            status_description = exception_obj.call("getMessage", [])
-                                .ok()
-                                .and_then(|zv| zv.as_z_str().and_then(|s| s.to_str().ok().map(|s| s.to_owned())))
-                                .unwrap_or(status_description);
-                        } else {
-                            let attributes = crate::error::php_exception_to_auto_attributes(exception_obj);
-                            ctx.span().add_event("exception", attributes);
+                if let Some(exception) = exceptions.first_mut()
+                    && let Some(exception_obj) = exception.as_mut_z_obj()
+                {
+                    if crate::config::sensitive_data::capture() {
+                        if let Ok(throwable) = phper::errors::ThrowObject::new(exception_obj.to_ref_owned()) {
+                            ctx.span().record_error(&throwable);
                         }
+                        status_description = exception_obj.call("getMessage", [])
+                            .ok()
+                            .and_then(|zv| zv.as_z_str().and_then(|s| s.to_str().ok().map(|s| s.to_owned())))
+                            .unwrap_or(status_description);
+                    } else {
+                        let attributes = crate::error::php_exception_to_auto_attributes(exception_obj);
+                        ctx.span().add_event("exception", attributes);
                     }
                 }
                 if http_response_code >= 500 {
@@ -298,17 +304,17 @@ impl Zf1AdapterConnectHandler {
             }
 
             let config = this_obj.get_property("_config");
-            if let Some(arr) = config.as_z_arr() {
-                if let Some(dbname) = arr.get("dbname") {
-                    tracing::debug!("Database: {:?}", dbname);
-                    execute_attributes.push(KeyValue::new(
-                        SemConv::trace::DB_NAMESPACE,
-                        dbname.as_z_str()
-                            .and_then(|s| s.to_str().ok())
-                            .unwrap_or_default()
-                            .to_string()
-                    ));
-                }
+            if let Some(arr) = config.as_z_arr()
+                && let Some(dbname) = arr.get("dbname")
+            {
+                tracing::debug!("Database: {:?}", dbname);
+                execute_attributes.push(KeyValue::new(
+                    SemConv::trace::DB_NAMESPACE,
+                    dbname.as_z_str()
+                        .and_then(|s| s.to_str().ok())
+                        .unwrap_or_default()
+                        .to_string()
+                ));
             }
             attributes.extend_from_slice(&execute_attributes);
 
@@ -374,7 +380,7 @@ impl Zf1AdapterPrepareHandler {
                 if crate::config::sensitive_data::capture() {
                     attributes.push(KeyValue::new(SemConv::trace::DB_QUERY_TEXT, sql.to_string()));
                 }
-                let sql_name = utils::extract_span_name_from_sql(&sql)
+                let sql_name = utils::extract_span_name_from_sql(sql)
                     .unwrap_or_else(|| "OTHER".to_string());
                 span_name = format!("prepare {}", sql_name);
             }
@@ -414,7 +420,7 @@ impl Zf1AdapterPrepareHandler {
             let sql_zval: &mut ZVal = exec_data_ref.get_mut_parameter(0);
             if let Some(sql_str) = sql_zval.as_z_str() {
                 if let Ok(sql) = sql_str.to_str() {
-                    let sql_name = utils::extract_span_name_from_sql(&sql)
+                    let sql_name = utils::extract_span_name_from_sql(sql)
                         .unwrap_or_else(|| "OTHER".to_string());
                     let execute_span_name = sql_name.clone();
                     let prepare_span_name = format!("prepare {}", sql_name.clone());

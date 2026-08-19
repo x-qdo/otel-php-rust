@@ -6,7 +6,7 @@ use crate::{
         propagation::parser::parse_into_builder,
     },
     context::{
-        context::{ContextClass, current_context_value},
+        context_class::{ContextClass, current_context_value},
         context_key::{ContextKeyClass, ContextKeysClass},
         propagation::array_access_getter_setter::{
             ArrayAccessGetterSetterClass, array_access_getter_setter_instance,

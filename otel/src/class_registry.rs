@@ -12,7 +12,7 @@ use crate::{
         },
     },
     context::{
-        context::{build_context_class, new_context_class},
+        context_class::{build_context_class, new_context_class},
         context_interface::{make_context_interface, make_implicit_context_keyed_interface},
         context_key::{
             make_context_key_class, make_context_key_interface, make_context_keys_class,

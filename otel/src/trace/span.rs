@@ -1,6 +1,6 @@
 use crate::{
     context::{
-        context::{ContextClass, get_instance_id, init_context_object, native_context_from_object},
+        context_class::{ContextClass, get_instance_id, init_context_object, native_context_from_object},
         context_key::{ContextKeyClass, ContextKeysClass, get_or_create_context_key},
         storage,
     },
@@ -207,7 +207,7 @@ pub fn make_span_base_class(
     let current_trace_state = trace_state_class.clone();
     class
         .add_static_method("getCurrent", Visibility::Public, move |_| {
-            let mut context = crate::context::context::current_context_value(&current_context_class)?;
+            let mut context = crate::context::context_class::current_context_value(&current_context_class)?;
             let span_key = get_or_create_context_key(
                 &current_keys_class,
                 &current_key_class,
@@ -260,7 +260,7 @@ pub fn make_span_base_class(
     let activate_context_class = context_class.clone();
     class
         .add_method("activate", Visibility::Public, move |this, _| {
-            let mut context = crate::context::context::current_context_value(&activate_context_class)?;
+            let mut context = crate::context::context_class::current_context_value(&activate_context_class)?;
             context.expect_mut_z_obj()?.call(
                 "withContextValue",
                 &mut [ZVal::from(this.to_ref_owned())],

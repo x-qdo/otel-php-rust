@@ -4,7 +4,7 @@ use crate::{
         interfaces::{BAGGAGE_BUILDER_INTERFACE, BAGGAGE_INTERFACE, ENTRY_CLASS},
     },
     context::{
-        context::{ContextClass, current_context_value},
+        context_class::{ContextClass, current_context_value},
         context_key::{ContextKeyClass, ContextKeysClass, get_or_create_context_key},
     },
 };

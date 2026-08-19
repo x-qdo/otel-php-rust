@@ -1,5 +1,5 @@
 use crate::context::{
-    context::ContextClass,
+    context_class::ContextClass,
     context_key::{ContextKeyClass, ContextKeysClass, get_or_create_context_key},
     propagation::array_access_getter_setter::{
         ArrayAccessGetterSetterClass, array_access_getter_setter_instance,
@@ -87,7 +87,7 @@ pub fn make_trace_context_propagator_class(
                 {
                     context.clone()
                 } else {
-                    crate::context::context::current_context_value(&inject_context_class)?
+                    crate::context::context_class::current_context_value(&inject_context_class)?
                 };
                 let context = otel_context_from_php(
                     context_value.expect_mut_z_obj()?,
@@ -163,11 +163,11 @@ pub fn make_trace_context_propagator_class(
             {
                 context.clone()
             } else {
-                crate::context::context::current_context_value(&context_ce)?
+                crate::context::context_class::current_context_value(&context_ce)?
             };
             let parent_native = parent_value
                 .as_z_obj()
-                .and_then(crate::context::context::native_context_from_object);
+                .and_then(crate::context::context_class::native_context_from_object);
             let mut parent_for_context = parent_value.clone();
             let parent_cx = otel_context_from_php(
                 parent_for_context.expect_mut_z_obj()?,

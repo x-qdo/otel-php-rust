@@ -41,6 +41,12 @@ pub fn init() {
 // for every observed function call; a panic in hook code is contained with
 // `panic::contain` so the observed PHP function still runs.
 
+/// Selects the observer callbacks for a Zend function invocation.
+///
+/// # Safety
+///
+/// `execute_data` must be the pointer supplied by Zend for the current observer
+/// invocation and must remain valid for the duration of this call.
 pub unsafe extern "C" fn observer_instrument(execute_data: *mut sys::zend_execute_data) -> sys::zend_observer_fcall_handlers {
     let no_handlers = sys::zend_observer_fcall_handlers {
         begin: None,
@@ -79,6 +85,12 @@ fn observer_for(fqn: &str) -> Option<Arc<FunctionObserver>> {
 }
 
 #[unsafe(no_mangle)]
+/// Runs the registered pre-observer hooks for a Zend function invocation.
+///
+/// # Safety
+///
+/// `execute_data` must be the pointer supplied by Zend for the current observer
+/// invocation and must remain valid for the duration of this call.
 pub unsafe extern "C" fn pre_observe_c_function(execute_data: *mut sys::zend_execute_data) {
     panic::contain(|| unsafe { pre_observe(execute_data) });
 }
@@ -100,6 +112,13 @@ unsafe fn pre_observe(execute_data: *mut sys::zend_execute_data) {
 }
 
 #[unsafe(no_mangle)]
+/// Runs the registered post-observer hooks for a Zend function invocation.
+///
+/// # Safety
+///
+/// `execute_data` and `retval` must be the pointers supplied by Zend for the
+/// current observer invocation. Non-null pointers must remain valid for the
+/// duration of this call.
 pub unsafe extern "C" fn post_observe_c_function(execute_data: *mut sys::zend_execute_data, retval: *mut sys::zval) {
     panic::contain(|| unsafe { post_observe(execute_data, retval) });
 }

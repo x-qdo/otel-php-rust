@@ -352,7 +352,7 @@ fn classify_grpc_status(message: &str) -> Option<ExportErrorKind> {
         .or_else(|| message.strip_prefix("status: "))?;
     let code = code.trim_start_matches('\'');
     let code_end = code
-        .find(|c: char| c == '\'' || c == ',')
+        .find(['\'', ','])
         .unwrap_or(code.len());
     let code = &code[..code_end];
     if RETRYABLE.contains(&code) {
@@ -643,13 +643,12 @@ impl SpanProcessor for BoundedBatchSpanProcessor {
                 .fetch_add(remaining, Ordering::Relaxed);
         } else if result.is_ok() {
             let handle = self.handle.lock().ok().and_then(|mut handle| handle.take());
-            if let Some(handle) = handle {
-                if handle.join().is_err() {
+            if let Some(handle) = handle
+                && handle.join().is_err() {
                     return Err(OTelSdkError::InternalFailure(
                         "trace exporter worker panicked".to_string(),
                     ));
                 }
-            }
         }
 
         result

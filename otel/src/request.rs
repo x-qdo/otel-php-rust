@@ -34,8 +34,8 @@ use std::{
 };
 
 thread_local! {
-    static OTEL_REQUEST_GUARD: RefCell<Option<opentelemetry::ContextGuard>> = RefCell::new(None);
-    static OTEL_CONTEXT_ID: RefCell<Option<u64>> = RefCell::new(None);
+    static OTEL_REQUEST_GUARD: RefCell<Option<opentelemetry::ContextGuard>> = const { RefCell::new(None) };
+    static OTEL_CONTEXT_ID: RefCell<Option<u64>> = const { RefCell::new(None) };
 }
 //backup mutating environment variables for request duration
 static ENV_BACKUP: Lazy<Mutex<HashMap<u32, HashMap<String, String>>>> =
@@ -112,12 +112,11 @@ pub fn is_disabled() -> bool {
     let request_details = get_request_details();
 
     // Check for excluded URL before creating root span
-    if let Some(ref uri) = request_details.uri {
-        if is_excluded_url(uri) {
+    if let Some(ref uri) = request_details.uri
+        && is_excluded_url(uri) {
             tracing::debug!("RINIT::excluded URL matched '{}'", uri);
             return true;
         }
-    }
     match std::env::var("OTEL_SDK_DISABLED") {
         Ok(value) if value.eq_ignore_ascii_case("true") => true,
         Ok(value) if value.is_empty() || value.eq_ignore_ascii_case("false") => false,
@@ -144,7 +143,7 @@ pub fn get_request_details() -> RequestDetails {
         let uri = server
             .ok()
             .and_then(|server| server.get("REQUEST_URI"))
-            .and_then(|zv| z_val_to_string(zv))
+            .and_then(z_val_to_string)
             // Fallback to request_info.request_uri if not found
             .or_else(|| {
                 Some(request_info.request_uri)
@@ -228,7 +227,7 @@ fn process_dotenv() {
             if let Some(resource_attributes) = resource_attributes {
                 //merge with original env var, if it exists
                 let mut merged =
-                    if let Some(existing) = std::env::var("OTEL_RESOURCE_ATTRIBUTES").ok() {
+                    if let Ok(existing) = std::env::var("OTEL_RESOURCE_ATTRIBUTES") {
                         parse_resource_attributes(&existing)
                     } else {
                         HashMap::new()
@@ -379,7 +378,7 @@ fn init() {
     let request_details = get_request_details();
     if span_name.is_none() {
         span_name = match &request_details.method {
-            Some(method) => Some(format!("{}", method)),
+            Some(method) => Some(method.to_string()),
             None => Some("<unknown>".to_string()),
         };
     }
@@ -453,8 +452,8 @@ fn shutdown() {
                     let mut func = ZVal::from("error_get_last");
                     let mut args: Vec<ZVal> = Vec::new();
                     let error = ZVal::call(&mut func, &mut args).ok();
-                    if let Some(error) = error {
-                        if error.get_type_info().is_array() {
+                    if let Some(error) = error
+                        && error.get_type_info().is_array() {
                             tracing::debug!("RSHUTDOWN::HTTP error detected");
                             let attributes = util::limit_key_values(
                                 crate::error::php_error_to_auto_attributes(&error),
@@ -462,7 +461,6 @@ fn shutdown() {
                             );
                             span.add_event("exception", attributes);
                         }
-                    }
                     // https://opentelemetry.io/docs/specs/semconv/http/http-spans/#status
                     span.set_status(opentelemetry::trace::Status::error(""));
                 }
@@ -524,14 +522,12 @@ fn get_server_vars_with_prefix(prefix: &str) -> HashMap<String, String> {
             server
                 .iter()
                 .filter_map(|(key, value)| {
-                    if let IterKey::ZStr(zstr) = key {
-                        if let Ok(key_str) = zstr.to_str() {
-                            if key_str.starts_with(prefix) {
-                                if let Some(value_str) = z_val_to_string(value) {
-                                    return Some((key_str.to_string(), value_str));
-                                }
-                            }
-                        }
+                    if let IterKey::ZStr(zstr) = key
+                        && let Ok(key_str) = zstr.to_str()
+                        && key_str.starts_with(prefix)
+                        && let Some(value_str) = z_val_to_string(value)
+                    {
+                        return Some((key_str.to_string(), value_str));
                     }
                     None
                 })
@@ -544,27 +540,25 @@ fn get_server_var(key: &str) -> Option<String> {
     get_request_server()
         .ok()
         .and_then(|server| server.get(key))
-        .and_then(|zv| z_val_to_string(zv))
+        .and_then(z_val_to_string)
 }
 
 fn extract_request_headers(server: &ZArr) -> HashMap<String, String> {
     let mut headers = HashMap::new();
 
     for (key, value) in server.iter() {
-        if let IterKey::ZStr(zstr) = key {
-            if let Ok(key_str) = zstr.to_str() {
-                if key_str.starts_with("HTTP_") {
-                    if let Some(value_str) = value.as_z_str().and_then(|z| z.to_str().ok()) {
-                        // Convert HTTP_ header names to standard format (e.g., HTTP_USER_AGENT -> User-Agent)
-                        let header_name = key_str
-                            .trim_start_matches("HTTP_")
-                            .replace('_', "-")
-                            .to_ascii_lowercase();
+        if let IterKey::ZStr(zstr) = key
+            && let Ok(key_str) = zstr.to_str()
+            && key_str.starts_with("HTTP_")
+            && let Some(value_str) = value.as_z_str().and_then(|z| z.to_str().ok())
+        {
+            // Convert HTTP_ header names to standard format (e.g., HTTP_USER_AGENT -> User-Agent)
+            let header_name = key_str
+                .trim_start_matches("HTTP_")
+                .replace('_', "-")
+                .to_ascii_lowercase();
 
-                        headers.insert(header_name, value_str.to_string());
-                    }
-                }
-            }
+            headers.insert(header_name, value_str.to_string());
         }
     }
 

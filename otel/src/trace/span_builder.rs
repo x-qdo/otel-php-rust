@@ -1,6 +1,6 @@
 use crate::{
     context::{
-        context::{ContextClass, current_context_value},
+        context_class::{ContextClass, current_context_value},
         context_key::{ContextKeyClass, ContextKeysClass},
     },
     trace::{
@@ -69,7 +69,7 @@ pub fn make_span_builder_class(
 ) -> ClassEntity<SpanBuilderState> {
     let mut class = ClassEntity::<SpanBuilderState>::new_with_state_constructor(
         SPAN_BUILDER_CLASS_NAME,
-        || SpanBuilderState::empty(),
+        SpanBuilderState::empty,
     );
     class.implements(interface);
 

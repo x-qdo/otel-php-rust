@@ -1,5 +1,5 @@
 use crate::context::{
-    context::{ContextClassEntity, clear_custom_storage, native_context_from_object},
+    context_class::{ContextClassEntity, clear_custom_storage, native_context_from_object},
     native_context::NativeContext,
     scope::ScopeClassEntity,
     scope_interface::{DETACHED, INACTIVE, MISMATCH},

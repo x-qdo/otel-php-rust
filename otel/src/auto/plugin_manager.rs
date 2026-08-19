@@ -42,6 +42,12 @@ pub struct PluginManager {
     plugins: Vec<Box<dyn Plugin + Send + Sync>>,
 }
 
+impl Default for PluginManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PluginManager {
     pub fn new() -> Self {
         tracing::debug!("PluginManager::init");
@@ -175,14 +181,12 @@ fn should_trace(func: &ZFunc, targets: &[(Option<&'static str>, &'static str)], 
         None => return false,
     };
     for (target_class_name, target_method_name) in targets.iter() {
-        if let Some(interface_name) = target_class_name {
-            if target_method_name == &observed_name_pair.1 {
-                if let Ok(iface_ce) = ClassEntry::from_globals(interface_name.to_string()) {
-                    if ce.is_instance_of(&iface_ce) {
-                        return true;
-                    }
-                }
-            }
+        if let Some(interface_name) = target_class_name
+            && target_method_name == &observed_name_pair.1
+            && let Ok(iface_ce) = ClassEntry::from_globals(interface_name)
+            && ce.is_instance_of(iface_ce)
+        {
+            return true;
         }
     }
 

@@ -1,5 +1,5 @@
 use crate::{
-    context::context::{ContextClass, native_context_from_object},
+    context::context_class::{ContextClass, native_context_from_object},
     logs::severity::{otel_severity, severity_number},
     util::{self, AttributeDestination, AttributeLimits},
 };

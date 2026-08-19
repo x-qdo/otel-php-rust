@@ -239,10 +239,10 @@ pub fn force_flush() {
         .get(&key)
         .filter(|provider| provider.enabled)
         .cloned();
-    if let Some(provider) = provider {
-        if let Err(error) = provider.sdk.force_flush() {
-            tracing::warn!("metrics force flush failed: {error}");
-        }
+    if let Some(provider) = provider
+        && let Err(error) = provider.sdk.force_flush()
+    {
+        tracing::warn!("metrics force flush failed: {error}");
     }
 }
 
@@ -314,8 +314,8 @@ pub fn make_meter_provider_class(interface: Interface, meter_class: MeterClass) 
             let scope_key = format!(
                 "{}\n{}\n{}",
                 scope.name(),
-                scope.version().as_deref().unwrap_or(""),
-                scope.schema_url().as_deref().unwrap_or("")
+                scope.version().unwrap_or(""),
+                scope.schema_url().unwrap_or("")
             );
             let meter = provider.sdk.meter_with_scope(scope);
             let mut object = meter_class.init_object()?;

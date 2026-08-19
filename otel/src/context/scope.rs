@@ -1,6 +1,6 @@
 use crate::{
     context::{
-        context::{ContextClassEntity, get_instance_id},
+        context_class::{ContextClassEntity, get_instance_id},
         native_context::NativeContext,
         storage,
     },

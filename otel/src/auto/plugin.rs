@@ -41,6 +41,12 @@ pub struct FunctionObserver {
     post_hooks: Vec<ObserverPostHook>,
 }
 
+impl Default for FunctionObserver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FunctionObserver {
     pub fn new() -> Self {
         Self {

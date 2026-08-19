@@ -1,5 +1,5 @@
 use crate::{
-    context::context::ContextClass,
+    context::context_class::ContextClass,
     error::php_exception_to_attributes,
     logs::log_record::{
         LogRecordState, any_value, nanos_to_system_time, set_attribute, set_attributes,

@@ -1,6 +1,6 @@
 use crate::{
     context::{
-        context::{ContextClass, get_instance_id},
+        context_class::{ContextClass, get_instance_id},
         context_key::{ContextKeyClass, ContextKeysClass, get_or_create_context_key},
         native_context::NativeContext,
         storage,
@@ -84,7 +84,7 @@ pub fn make_local_root_span_class(
     let current_non_recording = non_recording_span_class.clone();
     class
         .add_static_method("current", Visibility::Public, move |_| {
-            let mut context = crate::context::context::current_context_value(&context_class)?;
+            let mut context = crate::context::context_class::current_context_value(&context_class)?;
             from_context(
                 context.expect_mut_z_obj()?,
                 &current_key,

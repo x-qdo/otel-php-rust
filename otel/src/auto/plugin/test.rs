@@ -27,6 +27,12 @@ pub struct TestPlugin {
     handlers: HandlerList,
 }
 
+impl Default for TestPlugin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TestPlugin {
     pub fn new() -> Self {
         Self {
@@ -153,11 +159,10 @@ impl Handler for DemoFunctionHandler {
 impl DemoFunctionHandler {
     unsafe fn pre_callback(exec_data: *mut ExecuteData) {
         let tracer = tracer_provider::get_tracer_provider().tracer("php.otel.auto.test");
-        let mut attributes = vec![];
-        attributes.push(KeyValue::new("my-attribute", "my-value".to_string()));
+        let attributes = vec![KeyValue::new("my-attribute", "my-value".to_string())];
         let span_name = "demo-function";
 
-        utils::start_and_activate_span(tracer, &span_name, attributes, exec_data, opentelemetry::trace::SpanKind::Internal);
+        utils::start_and_activate_span(tracer, span_name, attributes, exec_data, opentelemetry::trace::SpanKind::Internal);
     }
 
     unsafe fn post_callback(

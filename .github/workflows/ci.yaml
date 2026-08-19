@@ -100,7 +100,10 @@ jobs:
 
       - name: Build release extension
         run: |
-          mkdir -p otel/.cargo/registry otel/.cargo/git otel/modules
+          mkdir -p otel/.cargo/registry otel/.cargo/git otel/modules otel/target
+          # Dockerfile runs the build as php-rust (UID/GID 1000), while GitHub's
+          # checkout belongs to the runner user. Only generated paths need write access.
+          sudo chown -R 1000:1000 otel/.cargo otel/modules otel/target
           docker compose run --rm php make build
 
       - name: Verification matrix
@@ -210,16 +213,16 @@ jobs:
           cache-workspaces: otel
       - name: Install generators
         run: |
-          cargo install cargo-cyclonedx --locked
-          cargo install cargo-about --locked --features cli
-          cargo install cargo-deny --locked
+          cargo install cargo-cyclonedx --version 0.5.9 --locked
+          cargo install cargo-about --version 0.9.2 --locked --features cli
+          cargo install cargo-deny --version 0.20.2 --locked
       - name: Generate
         working-directory: otel
         run: |
           set -euo pipefail
           mkdir -p ../dist/metadata
           cargo cyclonedx --format json --all-features --describe binaries
-          mv otel.cdx.json ../dist/metadata/otel-sbom.cdx.json
+          mv otel_cdylib.cdx.json ../dist/metadata/otel-sbom.cdx.json
           cargo about generate about.hbs -o ../dist/metadata/THIRD_PARTY_LICENSES.html
           cargo deny --all-features list --layout license > ../dist/metadata/license-inventory.txt
           cargo deny --all-features check advisories 2>&1 | tee ../dist/metadata/advisories.txt
