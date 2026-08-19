@@ -282,8 +282,7 @@ pub fn make_span_class(
 
 /// `Span::getCurrent()`: a span object bound to the current context.
 pub fn current_span_object(span_class: &SpanClass) -> phper::Result<StateObject<Option<SdkSpan>>> {
-    let ctx = storage::current_context();
-    let instance_id = storage::store_context_instance(ctx);
+    let instance_id = storage::current_span_context_instance_id();
 
     let mut object = span_class.init_object()?;
     *object.as_mut_state() = None;

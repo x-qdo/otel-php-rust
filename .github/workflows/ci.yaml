@@ -1,0 +1,225 @@
+name: CI
+
+# Every job is mandatory: no continue-on-error and no optional matrix entries.
+# The PHP matrix covers the fork's supported versions at this point in history.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  unit:
+    name: Rust tests, clippy gate and phpt (PHP ${{ matrix.php-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php-version: ['8.2', '8.3']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust (pinned by otel/rust-toolchain.toml)
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: clippy, rustfmt
+          cache-workspaces: otel
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php-version }}
+          coverage: none
+
+      - name: Build test extension
+        working-directory: otel
+        run: |
+          echo "TEST_PHP_EXECUTABLE=$(which php)" >> "$GITHUB_ENV"
+          make build-test
+          sudo cp target/debug/libotel.so "$(php-config --extension-dir)/otel.so"
+
+      - name: Panic-site lint gate
+        working-directory: otel
+        run: make lint
+
+      - name: Cargo tests
+        working-directory: otel
+        run: cargo test --features test
+
+      - name: Install auto-instrumentation fixtures
+        working-directory: otel
+        run: |
+          (cd tests/auto/zf1 && composer update --no-dev --no-interaction --no-progress)
+          (cd tests/auto/laminas && composer update --no-dev --no-interaction --no-progress)
+          (cd tests/auto/psr18 && composer update --no-dev --no-interaction --no-progress)
+
+      - name: phpt, HTTP and auto-instrumentation suites
+        working-directory: otel
+        run: php run-tests.php -q --show-diff tests/phpt tests/http tests/auto
+
+  supply-chain:
+    name: Advisories, licences and sources (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: otel/Cargo.toml
+          command: check
+          arguments: --all-features
+
+  integration:
+    name: Manifest, export isolation, transport and lifecycle (docker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      PHP_VERSION: '8.2'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the php test image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          build-args: PHP_VERSION=8.2
+          tags: php-rust:8.2
+          load: true
+          cache-from: type=gha,scope=php-rust-8.2
+          cache-to: type=gha,scope=php-rust-8.2,mode=max
+
+      - name: Build release extension
+        run: |
+          mkdir -p otel/.cargo/registry otel/.cargo/git otel/modules
+          docker compose run --rm php make build
+
+      - name: Verification matrix
+        run: make integration
+
+  release-artifacts:
+    name: Reproducible artifacts (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    needs: [unit, supply-chain]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/arm64
+            arch: aarch64
+          - platform: linux/amd64
+            arch: x86_64
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build otel.so (PHP 8.2, Alpine 3.18, ${{ matrix.arch }}-musl, dynamic musl)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.alpine
+          target: artifact
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            PHP_VERSION=8.2
+            ALPINE_VERSION=3.18
+            RUST_VERSION=1.97.1
+          outputs: type=local,dest=dist/${{ matrix.arch }}
+          cache-from: type=gha,scope=alpine-${{ matrix.arch }}
+          cache-to: type=gha,scope=alpine-${{ matrix.arch }},mode=max
+
+      - name: Load the extension in the target image and record ABI metadata
+        run: |
+          set -euo pipefail
+          so="otel-php8.2-${{ matrix.arch }}-linux-musl.so"
+          mv "dist/${{ matrix.arch }}/otel.so" "dist/${{ matrix.arch }}/${so}"
+          docker run --rm --platform ${{ matrix.platform }} \
+            -v "$PWD/dist/${{ matrix.arch }}/${so}:/otel.so:ro" \
+            -v "$PWD/otel/tests/integration/abi_metadata.php:/abi_metadata.php:ro" \
+            php:8.2-fpm-alpine3.18 sh -ec '
+              apk add --no-cache libgcc >/dev/null
+              php -n -d extension=/otel.so /abi_metadata.php' \
+            > "dist/${{ matrix.arch }}/abi.json"
+          cat "dist/${{ matrix.arch }}/abi.json"
+          (cd "dist/${{ matrix.arch }}" && sha256sum "${so}" abi.json > SHA256SUMS && cat SHA256SUMS)
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/${{ matrix.arch }}/*.so
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: otel-php8.2-${{ matrix.arch }}-linux-musl
+          path: dist/${{ matrix.arch }}
+          if-no-files-found: error
+
+  release-metadata:
+    name: SBOM, licence inventory and vulnerability report
+    runs-on: ubuntu-latest
+    needs: [supply-chain]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-workspaces: otel
+      - name: Install generators
+        run: |
+          cargo install cargo-cyclonedx --locked
+          cargo install cargo-about --locked --features cli
+          cargo install cargo-deny --locked
+      - name: Generate
+        working-directory: otel
+        run: |
+          set -euo pipefail
+          mkdir -p ../dist/metadata
+          cargo cyclonedx --format json --all-features --describe binaries
+          mv otel.cdx.json ../dist/metadata/otel-sbom.cdx.json
+          cargo about generate about.hbs -o ../dist/metadata/THIRD_PARTY_LICENSES.html
+          cargo deny --all-features list --layout license > ../dist/metadata/license-inventory.txt
+          cargo deny --all-features check advisories 2>&1 | tee ../dist/metadata/advisories.txt
+          cp rust-toolchain.toml deny.toml ../dist/metadata/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-metadata
+          path: dist/metadata
+          if-no-files-found: error
+
+  release:
+    name: Publish release assets
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    needs: [integration, release-artifacts, release-metadata]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Combined checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          find . -type f ! -name 'SHA256SUMS' -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+          cat SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/SHA256SUMS
+            dist/**/*.so
+            dist/**/abi.json
+            dist/release-metadata/*
+          generate_release_notes: true

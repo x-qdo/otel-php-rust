@@ -1,0 +1,5 @@
+# Pinned toolchain for every build (local docker images, CI, release). Bump deliberately
+# together with Dockerfile (RUST_VERSION) and re-run the full verification matrix.
+[toolchain]
+channel = "1.97.1"
+components = ["clippy", "rustfmt"]

@@ -1,0 +1,57 @@
+# cargo-deny policy for the release gate (`cargo deny check`): known vulnerabilities,
+# licence allow-list, and registry sources. Run from otel/.
+
+[graph]
+targets = [
+    "aarch64-unknown-linux-musl",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu",
+]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+# Permissive licences only; a new licence in the graph fails the gate until it is
+# reviewed here.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+    "0BSD",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    # phper (vendored) and its crates.
+    "MulanPSL-2.0",
+]
+confidence-threshold = 0.8
+exceptions = []
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+deny = [
+    # TLS must stay pure Rust: the musl release image ships no OpenSSL.
+    { crate = "openssl-sys", reason = "TLS is rustls-only; the musl release image ships no OpenSSL" },
+    { crate = "native-tls", reason = "TLS is rustls-only; the musl release image ships no OpenSSL" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

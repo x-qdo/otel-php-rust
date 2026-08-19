@@ -66,3 +66,11 @@ services:
       - ./otel/tests/integration/otlp_transport_fixture.py:/opt/otlp_transport_fixture.py:ro
       - ${OTEL_FIXTURE_CAPTURE_DIR:-/tmp/otel-php-rust-fixture-capture}:/var/lib/otel
     read_only: true
+  php-fpm-alpine:
+    # Release image under test (built by otel/tests/integration/test_alpine_php82_build.sh);
+    # the FPM lifecycle test overrides the command.
+    image: otel-php-rust:php82-alpine-local
+    entrypoint: [ "sh" ]
+    command: [ "-c", "php-fpm -v" ]
+    volumes:
+      - ./otel/tests/integration:/srv:ro

@@ -16,8 +16,12 @@ RUN apt-get update && apt-get install -y lsb-release apt-transport-https ca-cert
   && wget -qO - https://packages.sury.org/php/apt.gpg | apt-key add - \
   && apt-get update
 
+ARG RUST_VERSION=1.97.1
 USER php-rust
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+# The toolchain matches otel/rust-toolchain.toml so cargo never downloads another one at
+# run time (the container's rustup home is ephemeral).
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+  | sh -s -- -y --profile minimal --default-toolchain "${RUST_VERSION}" --component clippy --component rustfmt
 USER root
 
 COPY --from=composer /usr/bin/composer /usr/local/bin/composer

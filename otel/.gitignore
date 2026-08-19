@@ -23,3 +23,5 @@ config.status
 configure
 configure.ac
 libtool
+otel.cdx.json
+THIRD_PARTY_LICENSES.html

@@ -188,6 +188,33 @@ pub fn current_context_instance_id() -> Option<u64> {
     GUARD_STACK.with(|stack| stack.borrow().last().map(|(_, id)| *id))
 }
 
+/// Resolve the storage entry for the span in `Context::current()` without
+/// creating a fresh entry on every `Span::getCurrent()` call. CLI workers use
+/// `GUARD_STACK`; the request root uses its own guard, so fall back to matching
+/// the current span context against the registered request context. An invalid
+/// current span needs no storage entry at all.
+pub fn current_span_context_instance_id() -> Option<u64> {
+    if let Some(id) = current_context_instance_id() {
+        return Some(id);
+    }
+
+    let current = Context::current();
+    let span_context = current.span().span_context().clone();
+    if !span_context.is_valid() {
+        return None;
+    }
+
+    let find = |storage: &RefCell<HashMap<u64, Arc<Context>>>| {
+        storage.borrow().iter().find_map(|(id, context)| {
+            (context.span().span_context() == &span_context).then_some(*id)
+        })
+    };
+    CONTEXT_STORAGE
+        .with(find)
+        .or_else(|| DETACHED_SPAN_STORAGE.with(find))
+        .or_else(|| store_context_instance(Arc::new(current)))
+}
+
 fn new_instance_id() -> u64 {
     INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed)
 }
