@@ -21,6 +21,7 @@ run_audit() {
     local case="$1" protocol="$2" endpoint="$3"
     shift 3
     mkdir -p "${capture_dir}/${case}"
+    chmod 0777 "${capture_dir}/${case}"
     compose run --rm -T \
         -v "${capture_dir}:/capture" \
         -e "AUDIT_CASE=${case}" \
