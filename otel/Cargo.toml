@@ -27,7 +27,7 @@ panic = "unwind"
 
 [dependencies]
 phper = { path = "third_party/phper" }
-opentelemetry = { version = "0.31.0", features = ["internal-logs"] }
+opentelemetry = { version = "0.32.0", features = ["internal-logs"] }
 opentelemetry-http = "0.31.0"
 opentelemetry-stdout = "0.31.0"
 opentelemetry_sdk = { version = "0.31.0", features = ["testing"] }
