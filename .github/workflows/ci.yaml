@@ -253,9 +253,16 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download extension artifacts
+        uses: actions/download-artifact@v4
         with:
+          pattern: 'otel-php*'
           path: dist
+      - name: Download release metadata
+        uses: actions/download-artifact@v4
+        with:
+          name: release-metadata
+          path: dist/release-metadata
       - name: Combined checksums
         run: |
           set -euo pipefail
