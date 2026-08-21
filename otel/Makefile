@@ -38,13 +38,17 @@ clean:
 	rm -rf configure* config.h* libtool Makefile.* run-tests.php build/ autom4te.cache/
 	rm -rf acinclude.m4 config.log config.guess config.nice config.status config.sub install-sh ltmain.sh missing mkinstalldirs
 	rm -rf tests/auto/laminas/vendor/*
+	rm -rf tests/auto/laravel/vendor/*
 	rm -rf tests/auto/zf1/vendor/*
 	rm -rf tests/auto/psr18/vendor/*
+	rm -rf tests/auto/symfony/vendor/*
 update:
 	@echo "Updating composer dependencies..."
 	(cd tests/auto/laminas && composer update --no-dev)
+	(cd tests/auto/laravel && composer update --no-dev)
 	(cd tests/auto/zf1 && composer update --no-dev)
 	(cd tests/auto/psr18 && composer update --no-dev)
+	(cd tests/auto/symfony && composer update --no-dev)
 	@echo "✅ Composer dependencies updated"
 clean-build-test: clean test-all
 test: build-test

@@ -71,7 +71,9 @@ jobs:
             laminas_flags+=(--ignore-platform-req=php+)
           fi
           (cd tests/auto/laminas && composer install "${laminas_flags[@]}")
+          (cd tests/auto/laravel && composer install "${composer_flags[@]}")
           (cd tests/auto/psr18 && composer install "${composer_flags[@]}")
+          (cd tests/auto/symfony && composer install "${composer_flags[@]}")
           (cd tests/reflection && composer install "${composer_flags[@]}")
 
       - name: phpt, HTTP and auto-instrumentation suites
