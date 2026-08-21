@@ -134,7 +134,7 @@ Long-running CLI lifecycle and request-boundary cleanup are covered explicitly.
   debug exporters.
 - PID- and configuration-scoped providers for fork and long-worker safety.
 - Auto-instrumentation of userland and internal code through the Zend Observer API,
-  including initial Laminas, Zend Framework 1, and PSR-18 plugins.
+  including Laravel, Laminas, Symfony, Zend Framework 1, and PSR-18 plugins.
 - HTTP root spans, `traceparent` extraction, response status, and URL exclusions via
   `OTEL_PHP_EXCLUDED_URLS=/health*,/ping`.
 - Shared-hosting configuration through per-application `.env` files and selective
@@ -395,13 +395,35 @@ the root span's name to something more meaningful, and add some attributes.
 
 A couple of non-standard attributes are added if the data is available:
 `php.framework.name`, `php.framework.module.name`, `php.framework.controller.name`,
-`php.framework.action.name`.
+`php.framework.action.name`, and `console.command`.
 
 ### Laminas
 
 Hooks `Laminas\Mvc\MvcEvent::setRouteMatch`. Sets framework name, and uses the `RouteMatch` to set
 module, controller and action names.
 Hooks some of the `Laminas\Db` methods to create CLIENT spans for database queries.
+
+### Laravel
+
+Hooks `Illuminate\Contracts\Http\Kernel::handle`. Sets the framework name, updates
+the request span name from Laravel's route URI template, and adds `http.route`,
+controller, and action attributes when routing information is available.
+
+Hooks `Illuminate\Console\Command::execute` to create an INTERNAL span for each
+Artisan command. Non-zero exit codes and thrown exceptions mark the span as an
+error. Disable the plugin with `otel.auto.disabled_plugins=laravel`.
+
+### Symfony
+
+Hooks `Symfony\Component\HttpKernel\HttpKernel::handle`. Sets the framework name,
+updates the request span name from Symfony's resolved route name, and adds
+`http.route`, controller, and action attributes when routing information is
+available.
+
+Hooks `Symfony\Component\Console\Command\Command::run` to create an INTERNAL span
+for each console command. Non-zero exit codes and thrown exceptions mark the span
+as an error. Laravel commands are excluded from this generic hook to prevent
+duplicate spans. Disable the plugin with `otel.auto.disabled_plugins=symfony`.
 
 ### Zend Framework 1
 

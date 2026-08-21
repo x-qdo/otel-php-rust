@@ -5,8 +5,10 @@ use phper::{
 };
 
 // Submodules
+pub mod laravel;
 pub mod laminas;
 pub mod psr18;
+pub mod symfony;
 #[cfg(feature = "test")]
 pub mod test;
 pub mod zf1;

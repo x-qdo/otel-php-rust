@@ -3,8 +3,10 @@ use crate::{
         execute_data::get_fqn,
         plugin::{FunctionObserver, Plugin},
         plugin::{
+            laravel::LaravelPlugin,
             laminas::LaminasPlugin,
             psr18::Psr18Plugin,
+            symfony::SymfonyPlugin,
             zf1::Zf1Plugin,
         },
     },
@@ -68,11 +70,17 @@ impl PluginManager {
 
     fn init(&mut self) {
         let disabled = get_disabled_plugins();
+        if !disabled.contains("laravel") {
+            self.plugins.push(Box::new(LaravelPlugin::new()));
+        }
         if !disabled.contains("laminas") {
             self.plugins.push(Box::new(LaminasPlugin::new()));
         }
         if !disabled.contains("psr18") {
             self.plugins.push(Box::new(Psr18Plugin::new()));
+        }
+        if !disabled.contains("symfony") {
+            self.plugins.push(Box::new(SymfonyPlugin::new()));
         }
         if !disabled.contains("zf1") {
             self.plugins.push(Box::new(Zf1Plugin::new()));

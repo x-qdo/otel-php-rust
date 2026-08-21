@@ -1,0 +1,16 @@
+{
+    "name": "otel-php-rust/laravel-fixture",
+    "description": "Laravel auto-instrumentation test fixture",
+    "license": "proprietary",
+    "type": "project",
+    "require": {
+        "php": "^8.2",
+        "laravel/framework": "^12.0"
+    },
+    "config": {
+        "platform": {
+            "php": "8.2.0"
+        },
+        "sort-packages": true
+    }
+}

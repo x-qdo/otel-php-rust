@@ -1,0 +1,19 @@
+{
+    "name": "otel-php-rust/symfony-fixture",
+    "description": "Symfony auto-instrumentation test fixture",
+    "license": "proprietary",
+    "type": "project",
+    "require": {
+        "php": "^8.2",
+        "symfony/console": "^7.4",
+        "symfony/event-dispatcher": "^7.4",
+        "symfony/http-foundation": "^7.4",
+        "symfony/http-kernel": "^7.4"
+    },
+    "config": {
+        "platform": {
+            "php": "8.2.0"
+        },
+        "sort-packages": true
+    }
+}
